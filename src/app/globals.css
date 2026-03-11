@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --background: #efe7db;
+  --ink: #1c1917;
+  --panel: rgba(255, 253, 249, 0.92);
+}
+
+html {
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(245, 158, 11, 0.16), transparent 28%),
+    radial-gradient(circle at top right, rgba(120, 113, 108, 0.14), transparent 25%),
+    linear-gradient(180deg, #f5efe6 0%, #ece4d7 48%, #f7f3ec 100%);
+}
+
+body {
+  @apply text-stone-900 antialiased;
+  background: transparent;
+  font-family: var(--font-sans), sans-serif;
+}
+
+a,
+button,
+input,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.font-display {
+  font-family: var(--font-display), serif;
+}
+
+.leaflet-container {
+  font-family: var(--font-sans), sans-serif;
+}
+
+@keyframes fade_up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

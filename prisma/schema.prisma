@@ -1,0 +1,222 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SourceRole {
+  contact
+  contractor
+  applicant
+  unknown
+}
+
+enum WeeklyIssueStatus {
+  draft
+  published
+}
+
+enum SyncStatus {
+  started
+  success
+  partial
+  failed
+}
+
+model RawPermit {
+  id              String   @id @default(cuid())
+  sourceObjectId  Int      @map("source_object_id")
+  rawJson         Json     @map("raw_json")
+  fetchedAt       DateTime @default(now()) @map("fetched_at")
+  sourceUpdatedAt DateTime? @map("source_updated_at")
+  hash            String
+  syncBatchId     String   @map("sync_batch_id")
+
+  @@index([sourceObjectId])
+  @@index([syncBatchId])
+  @@map("raw_permits")
+}
+
+model Project {
+  id                        String    @id @default(cuid())
+  sourceObjectId            Int       @unique @map("source_object_id")
+  permitNumber              String?   @map("permit_number")
+  permitTypeDescription     String?   @map("permit_type_description")
+  permitSubtypeDescription  String?   @map("permit_subtype_description")
+  parcel                    String?
+  dateEntered               DateTime? @map("date_entered")
+  dateIssued                DateTime? @map("date_issued")
+  constructionCost          Decimal?  @db.Decimal(14, 2) @map("construction_cost")
+  address                   String?
+  city                      String?
+  state                     String?
+  zip                       String?
+  subdivisionLot            String?   @map("subdivision_lot")
+  contactRaw                String?   @map("contact_raw")
+  normalizedContactName     String?   @map("normalized_contact_name")
+  purpose                   String?
+  councilDist               String?   @map("council_dist")
+  censusTract               String?   @map("census_tract")
+  lon                       Float?
+  lat                       Float?
+  phaseBucket               String?   @map("phase_bucket")
+  score                     Float?
+  scoreBreakdown            Json?     @map("score_breakdown")
+  tradeTags                 Json      @default("[]") @map("trade_tags")
+  likelyStageNote           String?   @map("likely_stage_note")
+  isCommercial              Boolean   @default(false) @map("is_commercial")
+  isTargetRange             Boolean   @default(false) @map("is_target_range")
+  isNashvilleArea           Boolean   @default(false) @map("is_nashville_area")
+  isIncludedInIssue         Boolean   @default(true) @map("is_included_in_issue")
+  scoreOverride             Float?    @map("score_override")
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @updatedAt @map("updated_at")
+
+  gcLinks                   ProjectGcLink[]
+  issueProjects             WeeklyIssueProject[]
+
+  @@index([dateIssued])
+  @@index([phaseBucket])
+  @@index([normalizedContactName])
+  @@index([isCommercial, isTargetRange, isNashvilleArea])
+  @@map("projects")
+}
+
+model GcEntity {
+  id          String   @id @default(cuid())
+  canonicalName String @map("canonical_name")
+  slug        String   @unique
+  aliases     Json     @default("[]")
+  website     String?
+  phone       String?
+  email       String?
+  notes       String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  links       ProjectGcLink[]
+  snapshots   GcActivitySnapshot[]
+  watchlistEntries GcWatchlist[]
+
+  @@index([canonicalName])
+  @@map("gc_entities")
+}
+
+model ProjectGcLink {
+  id              String    @id @default(cuid())
+  projectId       String    @map("project_id")
+  gcEntityId      String    @map("gc_entity_id")
+  sourceRole      SourceRole @default(contact) @map("source_role")
+  confidenceScore Float     @default(0.5) @map("confidence_score")
+
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  gcEntity        GcEntity  @relation(fields: [gcEntityId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, gcEntityId, sourceRole])
+  @@index([gcEntityId])
+  @@map("project_gc_links")
+}
+
+model WeeklyIssue {
+  id            String           @id @default(cuid())
+  weekStartDate DateTime         @unique @map("week_start_date")
+  title         String
+  introText     String           @map("intro_text")
+  outroText     String           @map("outro_text")
+  status        WeeklyIssueStatus @default(draft)
+  generatedAt   DateTime         @default(now()) @map("generated_at")
+  publishedAt   DateTime?        @map("published_at")
+
+  projects      WeeklyIssueProject[]
+
+  @@index([status])
+  @@map("weekly_issues")
+}
+
+model WeeklyIssueProject {
+  id             String   @id @default(cuid())
+  weeklyIssueId  String   @map("weekly_issue_id")
+  projectId      String   @map("project_id")
+  sectionName    String   @map("section_name")
+  sortOrder      Int      @map("sort_order")
+  displayNote    String   @map("display_note")
+  customTradeNote String? @map("custom_trade_note")
+
+  weeklyIssue    WeeklyIssue @relation(fields: [weeklyIssueId], references: [id], onDelete: Cascade)
+  project        Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([weeklyIssueId, projectId])
+  @@index([weeklyIssueId, sectionName, sortOrder])
+  @@map("weekly_issue_projects")
+}
+
+model GcActivitySnapshot {
+  id                 String   @id @default(cuid())
+  weekStartDate      DateTime @map("week_start_date")
+  gcEntityId         String   @map("gc_entity_id")
+  projectCount90d    Int      @map("project_count_90d")
+  totalValuation90d  Decimal  @db.Decimal(14, 2) @map("total_valuation_90d")
+  mostRecentPermitDate DateTime? @map("most_recent_permit_date")
+  avgProjectSize     Decimal  @db.Decimal(14, 2) @map("avg_project_size")
+  dominantSubtype    String?  @map("dominant_subtype")
+  profileNote        String?  @map("profile_note")
+  generatedAt        DateTime @default(now()) @map("generated_at")
+
+  gcEntity           GcEntity @relation(fields: [gcEntityId], references: [id], onDelete: Cascade)
+
+  @@unique([weekStartDate, gcEntityId])
+  @@index([weekStartDate])
+  @@map("gc_activity_snapshots")
+}
+
+model SyncBatch {
+  id               String     @id @default(cuid())
+  mode             String
+  status           SyncStatus @default(started)
+  startedAt        DateTime   @default(now()) @map("started_at")
+  finishedAt       DateTime?  @map("finished_at")
+  whereClause      String?    @map("where_clause")
+  idsFetched       Int        @default(0) @map("ids_fetched")
+  recordsFetched   Int        @default(0) @map("records_fetched")
+  recordsProcessed Int        @default(0) @map("records_processed")
+  errorSummary     String?    @map("error_summary")
+  failedBatches    Json       @default("[]") @map("failed_batches")
+
+  @@index([startedAt])
+  @@map("sync_batches")
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+
+model SavedFilter {
+  id        String   @id @default(cuid())
+  name      String
+  queryJson Json     @map("query_json")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("saved_filters")
+}
+
+model GcWatchlist {
+  id         String   @id @default(cuid())
+  label      String
+  gcEntityId String   @map("gc_entity_id")
+  notes      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  gcEntity   GcEntity @relation(fields: [gcEntityId], references: [id], onDelete: Cascade)
+
+  @@index([gcEntityId])
+  @@map("gc_watchlist")
+}
