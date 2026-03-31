@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { format, isValid, parseISO, subDays } from 'date-fns';
-import { generateAiNarrative } from './ai';
+import { generateAiNarrative, getAiDebugState } from './ai';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject, SummaryStats } from './types';
 
 const FEATURE_URL =
@@ -287,6 +287,14 @@ function buildReadableSummary(permitSubtype: string, cleanedPurpose: string): st
   return `${firstSentence.slice(0, 117).trimEnd()}...`;
 }
 
+function timeBucketLabel(issueDateIso: string): string {
+  const issued = parseISO(issueDateIso);
+  const now = new Date();
+  if (issued >= subDays(now, 7)) return 'This Week';
+  if (issued >= subDays(now, 30)) return 'This Month';
+  return 'Earlier';
+}
+
 function hasNegativeRoofSignalText(value: string): boolean {
   const descriptor = value.toLowerCase();
   return [
@@ -433,17 +441,18 @@ function toProject(feature: ArcgisFeature): PermitProject | null {
     rawPurpose,
     purpose,
     readableSummary,
-    tradeSummary: readableSummary,
+    tradeSummary: '',
     valuation,
     issueDate: issueDate.toISOString(),
     issueDateLabel: format(issueDate, 'MMM d, yyyy'),
     mapsUrl: buildMapsUrl(address, city, state, zip),
     whyItMatters,
-    likelyTradesNote: `Likely trades involved: ${likelyTrades.join(', ')}.`,
     likelyTrades,
+    isTradeRelevant: null,
+    summarySource: 'fallback',
+    tradeSource: 'fallback',
     coordinates: { lat, lon },
-    rawFields,
-    aiSource: 'rule'
+    rawFields
   };
 }
 
@@ -454,42 +463,96 @@ function textsOverlap(left: string, right: string): boolean {
   return a === b || a.includes(b) || b.includes(a);
 }
 
-async function enrichProjectNarrative(project: PermitProject, trade: string): Promise<PermitProject> {
+function fallbackTradeDecision(project: PermitProject, trade: string): { isTradeRelevant: boolean | null; tradeReason: string } {
+  if (!trade) return { isTradeRelevant: null, tradeReason: '' };
+
+  const haystack = `${project.rawPurpose} ${project.purpose} ${project.permitType} ${project.permitSubtype} ${project.whyItMatters} ${project.likelyTrades.join(' ')}`.toLowerCase();
+  const normalized = trade.trim().toLowerCase();
+
+  if (normalized === 'roofing') {
+    const negative = hasNegativeRoofSignalText(haystack);
+    const positive = hasPositiveRoofSignalText(haystack);
+    if (negative && !positive) {
+      return { isTradeRelevant: false, tradeReason: '' };
+    }
+    return {
+      isTradeRelevant: positive || haystack.includes('new construction') || haystack.includes('shell'),
+      tradeReason: positive ? 'Roof or exterior scope appears to be part of this permit.' : ''
+    };
+  }
+
+  const keywords: Record<string, string[]> = {
+    plumbing: ['plumbing', 'fixture', 'restaurant', 'water', 'sewer'],
+    electrical: ['electrical', 'power', 'lighting', 'panel'],
+    hvac: ['hvac', 'mechanical', 'duct', 'air'],
+    drywall: ['drywall', 'partition', 'framing', 'ceiling', 'interior'],
+    flooring: ['flooring', 'tile', 'finish', 'interior'],
+    concrete: ['concrete', 'foundation', 'slab', 'structural'],
+    framing: ['framing', 'stud', 'partition', 'shell'],
+    'fire protection': ['fire protection', 'sprinkler', 'life safety'],
+    paint: ['paint', 'finish', 'interior'],
+    storefront: ['storefront', 'glass', 'façade', 'exterior'],
+    'general interiors': ['interior', 'tenant', 'build-out', 'finish']
+  };
+
+  const matches = (keywords[normalized] || []).some((keyword) => haystack.includes(keyword));
+  return { isTradeRelevant: matches, tradeReason: '' };
+}
+
+async function enrichProjectNarrative(project: PermitProject, trade: string, options?: { bypassCache?: boolean }): Promise<PermitProject> {
   const aiNarrative = await generateAiNarrative({
     permitNumber: project.permitNumber,
+    address: project.address,
     permitType: project.permitType,
     permitSubtype: project.permitSubtype,
     purpose: project.purpose || project.rawPurpose,
     valuation: project.valuation,
+    neighborhood: project.neighborhood,
+    contactName: project.contactName,
+    timeBucket: timeBucketLabel(project.issueDate),
     trade,
     likelyTrades: project.likelyTrades
-  });
+  }, options);
 
   if (!aiNarrative) {
+    const fallbackTrade = fallbackTradeDecision(project, trade);
     const fallbackProject: PermitProject = {
       ...project,
       readableSummary: project.readableSummary,
-      aiSource: 'rule'
+      tradeSummary: fallbackTrade.tradeReason,
+      isTradeRelevant: fallbackTrade.isTradeRelevant,
+      summarySource: 'fallback',
+      tradeSource: 'fallback'
     };
     console.log('FINAL SUMMARY SOURCE: fallback');
+    console.log('FINAL TRADE SOURCE: fallback');
     console.log('FINAL SUMMARY:', fallbackProject.readableSummary);
+    console.log('FINAL TRADE DECISION:', fallbackProject.isTradeRelevant ? 'relevant' : 'not relevant');
     return fallbackProject;
   }
 
-  const snapshot = aiNarrative.snapshot?.trim() || project.readableSummary;
-  const whyItMatters = aiNarrative.whyItMatters && !textsOverlap(aiNarrative.whyItMatters, snapshot) ? aiNarrative.whyItMatters : project.whyItMatters;
+  const summary = aiNarrative.summary.trim() || project.readableSummary;
+  const whyItMatters = aiNarrative.whyItMatters && !textsOverlap(aiNarrative.whyItMatters, summary) ? aiNarrative.whyItMatters : '';
   const tradeSummary =
-    aiNarrative.tradeNote && !textsOverlap(aiNarrative.tradeNote, whyItMatters || snapshot) ? aiNarrative.tradeNote : project.tradeSummary;
+    aiNarrative.tradeReason &&
+    !textsOverlap(aiNarrative.tradeReason, summary) &&
+    !textsOverlap(aiNarrative.tradeReason, whyItMatters)
+      ? aiNarrative.tradeReason
+      : '';
 
   const enrichedProject: PermitProject = {
     ...project,
-    readableSummary: snapshot,
+    readableSummary: summary,
     whyItMatters,
     tradeSummary,
-    aiSource: 'ai'
+    isTradeRelevant: trade ? aiNarrative.isTradeRelevant : null,
+    summarySource: 'ai',
+    tradeSource: trade ? 'ai' : 'fallback'
   };
   console.log('FINAL SUMMARY SOURCE: ai');
+  console.log('FINAL TRADE SOURCE:', trade ? 'ai' : 'fallback');
   console.log('FINAL SUMMARY:', enrichedProject.readableSummary);
+  console.log('FINAL TRADE DECISION:', enrichedProject.isTradeRelevant ? 'relevant' : 'not relevant');
   return enrichedProject;
 }
 
@@ -649,6 +712,8 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
   const filters = sanitizeFilters(input);
   const filteredProjects = sortProjects(projects.filter((project) => matchesFilters(project, filters)), filters.sort);
   const enrichedProjects = await enrichProjects(filteredProjects.slice(0, 120), trade);
+  const aiDebug = getAiDebugState();
+  const lastProject = enrichedProjects[0];
 
   return {
     filters,
@@ -658,15 +723,20 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
     activeContacts: buildActiveContacts(filteredProjects),
     availablePermitTypes: Array.from(new Set(projects.map((project) => project.permitSubtype || project.permitType).filter(Boolean))).sort(),
     availableNeighborhoods: Array.from(new Set(projects.map((project) => project.neighborhood).filter(Boolean))).sort(),
-    asOf: new Date(fetchedAt).toISOString()
+    asOf: new Date(fetchedAt).toISOString(),
+    debug: {
+      ...aiDebug,
+      lastSummarySource: lastProject?.summarySource || 'unknown',
+      lastTradeSource: lastProject?.tradeSource || 'unknown'
+    }
   };
 }
 
-export async function getProjectById(id: string, trade = ''): Promise<PermitProject | null> {
+export async function getProjectById(id: string, trade = '', options?: { bypassCache?: boolean }): Promise<PermitProject | null> {
   const { projects } = await loadProjects();
   const project = projects.find((project) => project.id === id) || null;
   if (!project) return null;
-  return enrichProjectNarrative(project, trade);
+  return enrichProjectNarrative(project, trade, options);
 }
 
 export async function getProjectsByContact(name: string, filters?: Partial<DashboardFilters>, trade = ''): Promise<DashboardPayload & { contactName: string }> {
@@ -677,6 +747,8 @@ export async function getProjectsByContact(name: string, filters?: Partial<Dashb
   );
   const sorted = sortProjects(projects, nextFilters.sort);
   const enrichedProjects = await enrichProjects(sorted, trade);
+  const aiDebug = getAiDebugState();
+  const lastProject = enrichedProjects[0];
 
   return {
     filters: nextFilters,
@@ -687,6 +759,25 @@ export async function getProjectsByContact(name: string, filters?: Partial<Dashb
     activeContacts: buildActiveContacts(sorted),
     availablePermitTypes: Array.from(new Set(allProjects.map((project) => project.permitSubtype || project.permitType).filter(Boolean))).sort(),
     availableNeighborhoods: Array.from(new Set(allProjects.map((project) => project.neighborhood).filter(Boolean))).sort(),
-    asOf: new Date(fetchedAt).toISOString()
+    asOf: new Date(fetchedAt).toISOString(),
+    debug: {
+      ...aiDebug,
+      lastSummarySource: lastProject?.summarySource || 'unknown',
+      lastTradeSource: lastProject?.tradeSource || 'unknown'
+    }
+  };
+}
+
+export async function regenerateProjectInterpretation(id: string, trade = '') {
+  const project = await getProjectById(id, trade, { bypassCache: true });
+  const aiDebug = getAiDebugState();
+
+  return {
+    project,
+    debug: {
+      ...aiDebug,
+      lastSummarySource: project?.summarySource || 'unknown',
+      lastTradeSource: project?.tradeSource || 'unknown'
+    }
   };
 }

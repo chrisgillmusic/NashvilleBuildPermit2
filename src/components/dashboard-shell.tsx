@@ -2,7 +2,6 @@
 
 import clsx from 'clsx';
 import dynamic from 'next/dynamic';
-import Link from 'next/link';
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { formatDistanceToNowStrict, isAfter, parseISO, subDays } from 'date-fns';
 import { formatCurrency } from '@/lib/format';
@@ -43,6 +42,7 @@ type TimeframeResolution = {
 
 const PROFILE_KEY = 'nbi-profile-v1';
 const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 3';
 
 const ONBOARDING_CARDS = [
   'Nashville Build Insider scans live permit data to surface real construction opportunities.',
@@ -216,6 +216,9 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [showOnboarding, setShowOnboarding] = useState(true);
   const [onboardingReady, setOnboardingReady] = useState(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
+  const [debugProjectId, setDebugProjectId] = useState('');
+  const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
+  const [isRegenerating, setIsRegenerating] = useState(false);
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
 
   const deferredNeighborhood = useDeferredValue(filters.neighborhood);
@@ -343,6 +346,44 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
     const nextIndex = Math.min(onboardingIndex + 1, ONBOARDING_CARDS.length - 1);
     setOnboardingIndex(nextIndex);
     onboardingTrackRef.current?.children[nextIndex]?.scrollIntoView({ behavior: 'smooth', inline: 'center' });
+  }
+
+  async function handleRegenerate() {
+    const id = debugProjectId.trim();
+    if (!id) return;
+
+    setIsRegenerating(true);
+    setRegenerateStatus(null);
+
+    try {
+      const response = await fetch('/api/permits/regenerate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, trade: profile.trade })
+      });
+
+      if (!response.ok) throw new Error('Failed to regenerate AI interpretation');
+
+      const result = (await response.json()) as { project: PermitProject | null; debug: DashboardPayload['debug'] };
+      if (!result.project) {
+        setRegenerateStatus('Project not found.');
+        return;
+      }
+
+      startTransition(() =>
+        setPayload((current) => ({
+          ...current,
+          projects: current.projects.map((project) => (project.id === result.project?.id ? result.project : project)),
+          featured: current.featured.map((project) => (project.id === result.project?.id ? result.project : project)),
+          debug: result.debug
+        }))
+      );
+      setRegenerateStatus(`Regenerated project ${result.project.id} using ${result.project.summarySource}.`);
+    } catch (error) {
+      setRegenerateStatus((error as Error).message);
+    } finally {
+      setIsRegenerating(false);
+    }
   }
 
   return (
@@ -643,6 +684,56 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                   </button>
                   <div className="rounded-full bg-white/10 px-4 py-2 text-sm text-stone-300">This Week = last 7 days • This Month = 8 to 30 days • Earlier = 30+ days</div>
                 </div>
+
+                <details className="mt-5 rounded-[24px] border border-white/10 bg-black/20 p-4">
+                  <summary className="cursor-pointer list-none text-sm font-semibold text-stone-100">Debug</summary>
+                  <div className="mt-4 grid gap-3 text-sm text-stone-300 sm:grid-cols-2">
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">AI enabled</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.aiEnabled ? 'Yes' : 'No'}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">API key present</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.apiKeyPresent ? 'Yes' : 'No'}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Version</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.appVersion}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last summary source</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.lastSummarySource}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last trade source</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.lastTradeSource}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Regenerate one job</div>
+                    <div className="mt-2 flex flex-wrap gap-3">
+                      <input
+                        value={debugProjectId}
+                        onChange={(event) => setDebugProjectId(event.target.value)}
+                        type="text"
+                        placeholder="Project ID"
+                        className="min-w-[180px] flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none"
+                      />
+                      <button
+                        onClick={handleRegenerate}
+                        disabled={isRegenerating || !debugProjectId.trim()}
+                        className={clsx(
+                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
+                          isRegenerating || !debugProjectId.trim() ? 'bg-white/10 text-stone-500' : 'bg-amber-300 text-stone-900'
+                        )}
+                      >
+                        {isRegenerating ? 'Regenerating…' : 'Regenerate'}
+                      </button>
+                    </div>
+                    {regenerateStatus ? <div className="mt-3 text-sm text-stone-300">{regenerateStatus}</div> : null}
+                  </div>
+                </details>
               </div>
             </section>
           ) : null}
@@ -671,6 +762,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
           <div className="mx-auto flex h-full w-full max-w-md flex-col justify-end">
             <div className="rounded-[32px] border border-white/20 bg-[linear-gradient(180deg,rgba(28,25,23,0.96),rgba(59,48,37,0.96))] p-5 shadow-[0_30px_90px_rgba(18,14,10,0.42)]">
               <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/55">Welcome</div>
+              <div className="mt-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-amber-200">{APP_VERSION}</div>
               <div
                 ref={onboardingTrackRef}
                 className="mt-4 flex snap-x snap-mandatory gap-4 overflow-x-auto scroll-smooth pb-2"

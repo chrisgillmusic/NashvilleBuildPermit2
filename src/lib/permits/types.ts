@@ -1,3 +1,5 @@
+export type InterpretationSource = 'ai' | 'fallback';
+
 export type PermitProject = {
   id: string;
   objectId: number;
@@ -21,14 +23,15 @@ export type PermitProject = {
   issueDateLabel: string;
   mapsUrl: string;
   whyItMatters: string;
-  likelyTradesNote: string;
   likelyTrades: string[];
+  isTradeRelevant: boolean | null;
+  summarySource: InterpretationSource;
+  tradeSource: InterpretationSource;
   coordinates: {
     lat: number | null;
     lon: number | null;
   };
   rawFields: Record<string, string>;
-  aiSource: 'ai' | 'rule';
 };
 
 export type DashboardFilters = {
@@ -67,4 +70,11 @@ export type DashboardPayload = {
   availablePermitTypes: string[];
   availableNeighborhoods: string[];
   asOf: string;
+  debug: {
+    aiEnabled: boolean;
+    apiKeyPresent: boolean;
+    appVersion: string;
+    lastSummarySource: InterpretationSource | 'unknown';
+    lastTradeSource: InterpretationSource | 'unknown';
+  };
 };

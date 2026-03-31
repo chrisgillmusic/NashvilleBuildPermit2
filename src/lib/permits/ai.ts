@@ -4,35 +4,45 @@ import OpenAI from 'openai';
 
 type NarrativeInput = {
   permitNumber: string;
+  address: string;
   permitType: string;
   permitSubtype: string;
   purpose: string;
   valuation: number;
   trade: string;
+  neighborhood: string;
+  contactName: string;
+  timeBucket: string;
   likelyTrades: string[];
 };
 
-export type AiNarrative = {
-  snapshot: string;
+export type AiInterpretation = {
+  summary: string;
   whyItMatters: string;
-  tradeNote: string;
+  tradeReason: string;
+  isTradeRelevant: boolean;
 };
 
 const AI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 6000);
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const OPENAI_API_URL = (process.env.OPENAI_API_URL || 'https://api.openai.com/v1').replace(/\/responses\/?$/, '');
 const AI_CACHE_TTL_MS = 1000 * 60 * 2;
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 3';
 
-const narrativeCache = new Map<string, { createdAt: number; promise: Promise<AiNarrative | null> }>();
+const narrativeCache = new Map<string, { createdAt: number; promise: Promise<AiInterpretation | null> }>();
 
 function buildKey(input: NarrativeInput): string {
   return [
     input.permitNumber,
     input.trade,
+    input.address,
     input.permitType,
     input.permitSubtype,
     input.purpose,
     input.valuation,
+    input.neighborhood,
+    input.contactName,
+    input.timeBucket,
     input.likelyTrades.join(',')
   ].join('::');
 }
@@ -41,30 +51,48 @@ function enabled(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
 }
 
-function extractJson(text: string): AiNarrative | null {
+function extractJson(text: string): AiInterpretation | null {
   const cleaned = text.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
 
   try {
-    const parsed = JSON.parse(cleaned) as Partial<AiNarrative>;
-    if (!parsed.snapshot) return null;
+    const parsed = JSON.parse(cleaned) as Partial<AiInterpretation>;
+    if (!parsed.summary || typeof parsed.isTradeRelevant !== 'boolean') return null;
     return {
-      snapshot: parsed.snapshot.trim(),
+      summary: parsed.summary.trim(),
       whyItMatters: (parsed.whyItMatters || '').trim(),
-      tradeNote: (parsed.tradeNote || '').trim()
+      tradeReason: (parsed.tradeReason || '').trim(),
+      isTradeRelevant: parsed.isTradeRelevant
     };
   } catch {
     return null;
   }
 }
 
-export async function generateAiNarrative(input: NarrativeInput): Promise<AiNarrative | null> {
+export function getAiDebugState() {
+  return {
+    aiEnabled: enabled(),
+    apiKeyPresent: Boolean(process.env.OPENAI_API_KEY),
+    appVersion: APP_VERSION
+  };
+}
+
+export function clearAiNarrativeCache(key?: string) {
+  if (key) {
+    narrativeCache.delete(key);
+    return;
+  }
+
+  narrativeCache.clear();
+}
+
+export async function generateAiNarrative(input: NarrativeInput, options?: { bypassCache?: boolean }): Promise<AiInterpretation | null> {
   if (!enabled()) {
     console.log('AI SKIPPED: missing key');
     return null;
   }
 
   const key = buildKey(input);
-  const cached = narrativeCache.get(key);
+  const cached = options?.bypassCache ? null : narrativeCache.get(key);
   if (cached && Date.now() - cached.createdAt < AI_CACHE_TTL_MS) {
     console.log('AI SKIPPED: cache hit');
     return cached.promise;
@@ -78,23 +106,28 @@ export async function generateAiNarrative(input: NarrativeInput): Promise<AiNarr
 
     try {
       const prompt = [
-        'Summarize this construction permit for a subcontractor in 1 sentence preferred, 2 short sentences max.',
-        'Write like a real person quickly explaining the job to a subcontractor.',
-        'Be direct, useful, short, specific, and human.',
-        'Do not sound corporate, promotional, or generic.',
-        'Do not copy permit sludge unless absolutely necessary.',
-        'Return strict JSON with keys: snapshot, whyItMatters, tradeNote.',
-        'snapshot: one clean summary sentence about the actual work.',
-        'whyItMatters: one short note only if it adds something new beyond snapshot. Otherwise return an empty string.',
-        'tradeNote: one short selected-trade note only if it adds something new beyond snapshot and whyItMatters. Otherwise return an empty string.',
-        'Avoid duplicated phrasing across all three fields.',
-        'Do not imply roofing if the permit says no change to exterior, no roofline change, interior only, or similar.',
+        'You are interpreting commercial permit data for a Nashville subcontractor app.',
+        'Return strict JSON with keys: summary, whyItMatters, tradeReason, isTradeRelevant.',
+        'summary: the main visible description. One sentence preferred, two short sentences max.',
+        'whyItMatters: optional. Only add it if it contributes something new beyond summary. Otherwise use an empty string.',
+        'tradeReason: optional. Explain briefly why the selected trade is relevant or not relevant. If no trade is selected or there is nothing useful to add, use an empty string.',
+        'isTradeRelevant: true or false based on the selected trade and the permit context.',
+        'Write in plainspoken English for a working subcontractor.',
+        'Be direct, specific, and human. No hype. No corporate tone. No giant trade lists.',
+        'Do not copy messy permit text unless a detail is necessary.',
+        'Use the full context to reason about what work is actually happening and what is excluded.',
+        'If the permit says no change to exterior, no roofline change, interior only, or similar, exterior trades like roofing should usually be excluded unless the permit clearly says roof or exterior work is happening.',
+        'If a permit suggests a trade is excluded, set isTradeRelevant to false and keep tradeReason short.',
         JSON.stringify({
           permitNumber: input.permitNumber,
+          address: input.address,
           permitType: input.permitType,
           permitSubtype: input.permitSubtype,
           purpose: input.purpose,
           valuation: input.valuation,
+          neighborhood: input.neighborhood,
+          contactName: input.contactName,
+          timeBucket: input.timeBucket,
           selectedTrade: input.trade || null,
           likelyTrades: input.likelyTrades
         })

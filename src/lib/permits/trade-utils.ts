@@ -67,6 +67,7 @@ function hasPositiveRoofSignal(project: PermitProject): boolean {
 
 export function projectMatchesTrade(project: PermitProject, trade: string): boolean {
   if (!trade) return true;
+  if (project.tradeSource === 'ai' && project.isTradeRelevant !== null) return project.isTradeRelevant;
   const normalized = normalizeTradeValue(trade);
 
   if (normalized === 'roofing') {
@@ -81,6 +82,10 @@ export function projectMatchesTrade(project: PermitProject, trade: string): bool
 
 export function buildTradeRelevance(project: PermitProject, trade: string): string {
   if (!trade) return project.whyItMatters;
+  if (project.tradeSource === 'ai') {
+    if (!project.isTradeRelevant) return '';
+    return project.tradeSummary || '';
+  }
   if (project.tradeSummary && project.tradeSummary !== project.readableSummary) return project.tradeSummary;
 
   const normalized = normalizeTradeValue(trade);
