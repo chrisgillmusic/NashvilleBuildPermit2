@@ -12,6 +12,7 @@ export type PermitProject = {
   contactName: string;
   contactPhone: string | null;
   contactEmail: string | null;
+  rawPurpose: string;
   purpose: string;
   readableSummary: string;
   tradeSummary: string;
@@ -27,6 +28,7 @@ export type PermitProject = {
     lon: number | null;
   };
   rawFields: Record<string, string>;
+  aiSource: 'ai' | 'rule';
 };
 
 export type DashboardFilters = {

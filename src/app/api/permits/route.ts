@@ -12,6 +12,7 @@ function toNumber(value: string | null): number | undefined {
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
+  const trade = searchParams.get('trade') || '';
 
   const filters: Partial<DashboardFilters> = {
     minBudget: toNumber(searchParams.get('minBudget')),
@@ -24,6 +25,6 @@ export async function GET(request: NextRequest) {
     sort: (searchParams.get('sort') as DashboardFilters['sort'] | null) || undefined
   };
 
-  const payload = await getDashboardPayload(filters);
+  const payload = await getDashboardPayload(filters, trade);
   return NextResponse.json(payload);
 }

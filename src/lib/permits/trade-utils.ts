@@ -39,10 +39,26 @@ function tradeKeywordMap(trade: string): string[] {
   return ['drywall', 'ceilings', 'flooring', 'paint', 'interiors'];
 }
 
+function hasNegativeRoofSignal(project: PermitProject): boolean {
+  const haystack = `${project.rawPurpose} ${project.purpose}`.toLowerCase();
+  return ['no exterior', 'no roof', 'no roofline change', 'interior only', 'no outside work'].some((term) => haystack.includes(term));
+}
+
+function hasPositiveRoofSignal(project: PermitProject): boolean {
+  const haystack = `${project.rawPurpose} ${project.purpose} ${project.permitSubtype} ${project.permitType}`.toLowerCase();
+  return ['roof', 'roofing', 'roofline', 'siding', 'sheet metal', 'waterproofing', 'exterior envelope'].some((term) => haystack.includes(term));
+}
+
 export function projectMatchesTrade(project: PermitProject, trade: string): boolean {
   if (!trade) return true;
+  const normalized = normalizeTradeValue(trade);
+
+  if (normalized === 'roofing') {
+    if (hasNegativeRoofSignal(project) && !hasPositiveRoofSignal(project)) return false;
+  }
+
   const keywords = tradeKeywordMap(trade);
-  const haystack = `${project.likelyTrades.join(' ')} ${project.tradeSummary} ${project.whyItMatters}`.toLowerCase();
+  const haystack = `${project.likelyTrades.join(' ')} ${project.tradeSummary} ${project.whyItMatters} ${project.permitType} ${project.permitSubtype} ${project.purpose}`.toLowerCase();
   return keywords.some((keyword) => haystack.includes(keyword));
 }
 
@@ -58,7 +74,7 @@ export function buildTradeRelevance(project: PermitProject, trade: string): stri
     if (normalized === 'hvac') return 'Worth an HVAC look because comfort systems and mechanical adjustments are likely in play.';
     if (normalized === 'drywall') return 'Worth a drywall look because interior framing, partitions, or ceiling work may follow.';
     if (normalized === 'flooring') return 'Worth a flooring look because finish packages and interior turnover work are likely in play.';
-    if (normalized === 'roofing') return 'Worth a roofing look because envelope or exterior system scope may be active here.';
+    if (normalized === 'roofing') return 'Worth a roofing look only if the permit scope points to envelope, roof, or exterior system work.';
     if (normalized === 'concrete') return 'Worth a concrete look because early structural or foundation scope may still be in motion.';
     if (normalized === 'framing') return 'Worth a framing look because shell or interior build-out work appears relevant.';
     if (normalized === 'fire protection') return 'Worth a fire protection look because commercial interiors often trigger life-safety coordination.';

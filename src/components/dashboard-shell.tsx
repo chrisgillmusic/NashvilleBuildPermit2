@@ -138,15 +138,9 @@ function projectsForTimeframe(projects: PermitProject[], timeframe: TimeframeKey
 }
 
 function labelForTimeframe(timeframe: TimeframeKey): string {
-  if (timeframe === 'new') return 'last 7 days';
-  if (timeframe === 'active') return 'past month';
-  return 'older permits';
-}
-
-function timeframeSummary(timeframe: TimeframeKey): string {
-  if (timeframe === 'new') return 'last 7 days';
-  if (timeframe === 'active') return '8 to 30 days old';
-  return '30+ days old';
+  if (timeframe === 'new') return 'This Week';
+  if (timeframe === 'active') return 'This Month';
+  return 'Earlier';
 }
 
 function resolveTimeframeProjects(projects: PermitProject[], requested: TimeframeKey): TimeframeResolution {
@@ -183,7 +177,7 @@ function resolveTimeframeProjects(projects: PermitProject[], requested: Timefram
         requested,
         displayed: timeframe,
         projects: results,
-        message: 'No recent permits from the past month. Showing older activity.'
+        message: 'No permits from the past month. Showing earlier activity.'
       };
     }
   }
@@ -236,6 +230,12 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
     [deferredContractor, deferredNeighborhood, filters]
   );
 
+  const requestQuery = useMemo(() => {
+    const params = new URLSearchParams(buildQuery(requestFilters));
+    if (profile.trade) params.set('trade', profile.trade);
+    return params.toString();
+  }, [profile.trade, requestFilters]);
+
   const contactContextQuery = useMemo(() => {
     const params = new URLSearchParams(buildQuery(requestFilters));
     params.set('mode', feedMode);
@@ -272,7 +272,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       setIsLoading(true);
 
       try {
-        const response = await fetch(`/api/permits?${buildQuery(requestFilters)}`, {
+        const response = await fetch(`/api/permits?${requestQuery}`, {
           signal: controller.signal,
           cache: 'no-store'
         });
@@ -290,7 +290,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       controller.abort();
       window.clearTimeout(timeoutId);
     };
-  }, [requestFilters]);
+  }, [requestQuery]);
 
   const baseProjects = useMemo(() => {
     if (feedMode === 'my-trade' && profile.trade) return projectViewForMode(payload.projects, 'my-trade', profile.trade);
@@ -310,14 +310,14 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const marketNote = buildMarketNote(profile.trade, baseProjects);
   const jobsSummary = useMemo(() => {
     if (!profile.trade) {
-      return `${visibleProjects.length} permits in the ${timeframeSummary(timeframeState.displayed)} view.`;
+      return `${visibleProjects.length} permits in ${labelForTimeframe(timeframeState.displayed)}.`;
     }
 
     if (!visibleProjects.length) {
-      return `No ${profile.trade.toLowerCase()} permits in this view right now.`;
+      return `No ${profile.trade.toLowerCase()} permits in ${labelForTimeframe(timeframeState.displayed)} right now.`;
     }
 
-    return `${visibleProjects.length} ${profile.trade.toLowerCase()} permits in the ${timeframeSummary(timeframeState.displayed)} view.`;
+    return `${visibleProjects.length} ${profile.trade.toLowerCase()} permits in ${labelForTimeframe(timeframeState.displayed)}.`;
   }, [profile.trade, timeframeState.displayed, visibleProjects.length]);
 
   function updateProfile<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
@@ -348,15 +348,15 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   return (
     <>
       <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 pb-28 pt-5 sm:px-6">
-        <header className="rounded-[28px] border border-white/45 bg-white/74 px-4 py-4 shadow-[0_24px_80px_rgba(43,37,20,0.12)] backdrop-blur-xl sm:px-6">
+        <header className="rounded-[28px] border border-white/10 bg-[rgba(12,13,16,0.78)] px-4 py-4 shadow-[0_24px_80px_rgba(0,0,0,0.35)] backdrop-blur-xl sm:px-6">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-500">Nashville Build Insider</p>
-              <h1 className="mt-2 font-display text-3xl leading-none text-stone-950">Live local permit intelligence for Nashville subcontractors.</h1>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">Nashville Build Insider</p>
+              <h1 className="mt-2 font-display text-3xl leading-none text-white">Live local permit intelligence for Nashville subcontractors.</h1>
             </div>
-            <div className="rounded-2xl border border-white/70 bg-white/75 px-4 py-3 text-right text-xs text-stone-500">
+            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-right text-xs text-stone-400">
               <div>Updated from live permits</div>
-              <div className="mt-1 font-medium text-stone-800">{formatDistanceToNowStrict(new Date(payload.asOf), { addSuffix: true })}</div>
+              <div className="mt-1 font-medium text-stone-100">{formatDistanceToNowStrict(new Date(payload.asOf), { addSuffix: true })}</div>
             </div>
           </div>
         </header>
@@ -364,12 +364,12 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
         <div key={activeTab} className="mt-5 animate-[fade_up_220ms_ease]">
           {activeTab === 'home' ? (
             <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">{profile.trade ? `${profile.trade} briefing` : 'Market briefing'}</div>
-                <h2 className="mt-2 font-display text-3xl leading-tight text-stone-950">
+              <div className="rounded-[28px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{profile.trade ? `${profile.trade} briefing` : 'Market briefing'}</div>
+                <h2 className="mt-2 font-display text-3xl leading-tight text-white">
                   {profile.trade ? `Here’s how ${profile.trade.toLowerCase()} work looks right now.` : 'Choose a trade to personalize the brief.'}
                 </h2>
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-700">{marketNote}</p>
+                <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-300">{marketNote}</p>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -383,43 +383,43 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                 </div>
               </div>
 
-              <div className="rounded-[28px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
+              <div className="rounded-[28px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <h3 className="font-display text-2xl text-stone-950">Worth a quick look</h3>
-                    <p className="mt-1 text-sm text-stone-600">A few permits and builders to check first.</p>
+                    <h3 className="font-display text-2xl text-white">Worth a quick look</h3>
+                    <p className="mt-1 text-sm text-stone-400">A few permits and builders to check first.</p>
                   </div>
-                  <button onClick={() => setActiveTab('jobs')} className="rounded-full border border-stone-300 px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-stone-700 active:scale-[0.98]">
+                  <button onClick={() => setActiveTab('jobs')} className="rounded-full border border-white/20 px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-stone-100 active:scale-[0.98]">
                     Open Jobs
                   </button>
                 </div>
 
                 <div className="mt-4 grid gap-3">
                   {dashboardPreviewProjects.map((project) => (
-                    <Link key={project.id} href={`/projects/${project.id}`} className="rounded-2xl border border-stone-200 bg-stone-50/90 px-4 py-4 transition hover:border-amber-300 active:scale-[0.99]">
+                    <a key={project.id} href={`/projects/${project.id}${profile.trade ? `?trade=${encodeURIComponent(profile.trade)}` : ''}`} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 transition hover:border-amber-300 active:scale-[0.99]">
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <div className="text-sm font-semibold text-stone-950">{project.address || 'Address pending'}</div>
-                          <div className="mt-1 text-sm text-stone-600">{project.readableSummary}</div>
+                          <div className="text-sm font-semibold text-white">{project.address || 'Address pending'}</div>
+                          <div className="mt-1 text-sm text-stone-300">{project.readableSummary}</div>
                         </div>
-                        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-stone-500">{project.issueDateLabel}</div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-stone-400">{project.issueDateLabel}</div>
                       </div>
-                    </Link>
+                    </a>
                   ))}
                 </div>
 
                 <div className="mt-5 border-t border-stone-100 pt-5">
-                  <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-stone-500">Top builders</h4>
+                  <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-stone-400">Top builders</h4>
                   <div className="mt-3 grid gap-3">
                     {dashboardPreviewContacts.map((contact) => (
-                      <a key={contact.name} href={`/contacts?name=${encodeURIComponent(contact.name)}&${contactContextQuery}`} className="flex items-center justify-between rounded-2xl border border-stone-200 bg-stone-50/90 px-4 py-3 transition hover:border-amber-300 active:scale-[0.99]">
+                      <a key={contact.name} href={`/contacts?name=${encodeURIComponent(contact.name)}&${contactContextQuery}`} className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3 transition hover:border-amber-300 active:scale-[0.99]">
                         <div>
-                          <div className="text-sm font-semibold text-stone-950">{contact.name}</div>
-                          <div className="mt-1 text-sm text-stone-600">
+                          <div className="text-sm font-semibold text-white">{contact.name}</div>
+                          <div className="mt-1 text-sm text-stone-300">
                             {contact.projectCount} projects • {formatCurrency(contact.totalValuation)}
                           </div>
                         </div>
-                        <div className="text-xs uppercase tracking-[0.16em] text-stone-500">Open</div>
+                        <div className="text-xs uppercase tracking-[0.16em] text-stone-400">Open</div>
                       </a>
                     ))}
                   </div>
@@ -430,13 +430,13 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
 
           {activeTab === 'jobs' ? (
             <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
+              <div className="rounded-[28px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h2 className="font-display text-3xl text-stone-950">Jobs</h2>
-                    <p className="mt-1 text-sm text-stone-600">{jobsSummary}</p>
+                    <h2 className="font-display text-3xl text-white">Jobs</h2>
+                    <p className="mt-1 text-sm text-stone-300">{jobsSummary}</p>
                   </div>
-                  <div className="text-xs uppercase tracking-[0.16em] text-stone-500">{isLoading ? 'Refreshing' : `${labelForTimeframe(timeframeState.displayed)}`}</div>
+                  <div className="text-xs uppercase tracking-[0.16em] text-stone-400">{isLoading ? 'Refreshing' : `${labelForTimeframe(timeframeState.displayed)}`}</div>
                 </div>
 
                 <div className="mt-4 flex flex-wrap gap-3">
@@ -467,21 +467,24 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                         setRequestedTimeframe(key);
                         setExpandedJobId(null);
                       }}
-                      className={clsx('rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]', requestedTimeframe === key ? 'bg-stone-950 text-white' : 'border border-stone-300 bg-white text-stone-700')}
+                      className={clsx(
+                        'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
+                        timeframeState.displayed === key ? 'bg-stone-950 text-white' : 'border border-stone-300 bg-white text-stone-700'
+                      )}
                     >
-                      {key === 'new' ? 'New' : key === 'active' ? 'Active' : 'Older'}
+                      {key === 'new' ? 'This Week' : key === 'active' ? 'This Month' : 'Earlier'}
                     </button>
                   ))}
                 </div>
 
-                {timeframeState.message ? <div className="mt-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">{timeframeState.message}</div> : null}
+                {timeframeState.message ? <div className="mt-4 rounded-2xl bg-amber-400/10 px-4 py-3 text-sm text-amber-100 ring-1 ring-amber-300/20">{timeframeState.message}</div> : null}
               </div>
 
-              <details className="group rounded-[24px] border border-white/45 bg-white/82 p-4 shadow-[0_18px_60px_rgba(43,37,20,0.06)] backdrop-blur-xl">
-                <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold text-stone-800">
+              <details className="group rounded-[24px] border border-white/10 bg-[rgba(15,16,18,0.72)] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-xl">
+                <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold text-stone-100">
                   <span>Refine</span>
-                  <span className="text-xs uppercase tracking-[0.16em] text-stone-500 group-open:hidden">Open</span>
-                  <span className="hidden text-xs uppercase tracking-[0.16em] text-stone-500 group-open:inline">Close</span>
+                  <span className="text-xs uppercase tracking-[0.16em] text-stone-400 group-open:hidden">Open</span>
+                  <span className="hidden text-xs uppercase tracking-[0.16em] text-stone-400 group-open:inline">Close</span>
                 </summary>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   <label className="space-y-2 text-sm text-stone-700">
@@ -538,32 +541,32 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
 
           {activeTab === 'builders' ? (
             <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
-                <h2 className="font-display text-3xl text-stone-950">Builders</h2>
-                <p className="mt-1 text-sm text-stone-600">Call and email actions first, with project count and valuation for context.</p>
+              <div className="rounded-[28px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+                <h2 className="font-display text-3xl text-white">Builders</h2>
+                <p className="mt-1 text-sm text-stone-300">Call and email actions first, with project count and valuation for context.</p>
               </div>
 
               <div className="space-y-4">
                 {visibleContacts.map((contact) => (
-                  <article key={contact.name} className="rounded-[24px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
+                  <article key={contact.name} className="rounded-[24px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <h3 className="text-xl font-semibold text-stone-950">{contact.name}</h3>
-                        <p className="mt-2 text-sm text-stone-600">
+                        <h3 className="text-xl font-semibold text-white">{contact.name}</h3>
+                        <p className="mt-2 text-sm text-stone-300">
                           {contact.projectCount} projects • {formatCurrency(contact.totalValuation)}
                         </p>
-                        {contact.phone ? <p className="mt-2 text-sm text-stone-700">{contact.phone}</p> : null}
-                        {contact.email ? <p className="mt-1 text-sm text-stone-700">{contact.email}</p> : null}
-                        {!contact.phone && !contact.email ? <p className="mt-2 text-sm text-stone-500">Contact info unavailable</p> : null}
+                        {contact.phone ? <p className="mt-2 text-sm text-stone-200">{contact.phone}</p> : null}
+                        {contact.email ? <p className="mt-1 text-sm text-stone-200">{contact.email}</p> : null}
+                        {!contact.phone && !contact.email ? <p className="mt-2 text-sm text-stone-400">Contact info unavailable</p> : null}
                       </div>
-                      <a href={`/contacts?name=${encodeURIComponent(contact.name)}&${contactContextQuery}`} className="rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold text-stone-800 active:scale-[0.98]">
+                      <a href={`/contacts?name=${encodeURIComponent(contact.name)}&${contactContextQuery}`} className="rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-stone-100 active:scale-[0.98]">
                         Open
                       </a>
                     </div>
 
                     <div className="mt-4 flex flex-wrap gap-3 text-sm font-semibold">
-                      {contact.phone ? <a href={formatPhoneHref(contact.phone)} className="rounded-full bg-stone-950 px-4 py-2 text-white active:scale-[0.98]">Call</a> : null}
-                      {contact.email ? <a href={`mailto:${contact.email}`} className="rounded-full border border-stone-300 px-4 py-2 text-stone-800 active:scale-[0.98]">Email</a> : null}
+                      {contact.phone ? <a href={formatPhoneHref(contact.phone)} className="rounded-full bg-amber-400 px-4 py-2 text-stone-950 active:scale-[0.98]">Call</a> : null}
+                      {contact.email ? <a href={`mailto:${contact.email}`} className="rounded-full border border-white/20 px-4 py-2 text-stone-100 active:scale-[0.98]">Email</a> : null}
                     </div>
                   </article>
                 ))}
@@ -573,9 +576,9 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
 
           {activeTab === 'profile' ? (
             <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
-                <h2 className="font-display text-3xl text-stone-950">Profile</h2>
-                <p className="mt-1 text-sm text-stone-600">Local-only profile fields for shaping the app while auth is still out of scope.</p>
+              <div className="rounded-[28px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+                <h2 className="font-display text-3xl text-white">Profile</h2>
+                <p className="mt-1 text-sm text-stone-300">Local-only profile fields for shaping the app while auth is still out of scope.</p>
 
                 <div className="mt-5 grid gap-3 sm:grid-cols-2">
                   <label className="space-y-2 text-sm text-stone-700">
@@ -635,7 +638,10 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                   >
                     Apply to app
                   </button>
-                  <div className="rounded-full bg-stone-100 px-4 py-2 text-sm text-stone-600">Stored locally on this device</div>
+                  <button onClick={() => setShowOnboarding(true)} className="rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-stone-100 active:scale-[0.98]">
+                    How it works
+                  </button>
+                  <div className="rounded-full bg-white/10 px-4 py-2 text-sm text-stone-300">This Week = last 7 days • This Month = 8 to 30 days • Earlier = 30+ days</div>
                 </div>
               </div>
             </section>

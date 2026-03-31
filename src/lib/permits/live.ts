@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { format, isValid, parseISO, subDays } from 'date-fns';
+import { generateAiNarrative } from './ai';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject, SummaryStats } from './types';
 
 const FEATURE_URL =
@@ -290,6 +291,7 @@ function deriveNotes(permitType: string, permitSubtype: string, purpose: string)
   const descriptor = `${permitType} ${permitSubtype} ${purpose}`.toLowerCase();
   const trades: string[] = [];
   let whyItMatters = 'Commercial permit with active scope and enough valuation to matter for serious subcontractor follow-up.';
+  const suppressRoofing = ['no exterior', 'no roof', 'no roofline change', 'interior only'].some((term) => descriptor.includes(term));
 
   if (descriptor.includes('tenant finish') || descriptor.includes('build-out') || descriptor.includes('interior')) {
     whyItMatters = 'Interior build-out with active coordination and finish work likely moving quickly.';
@@ -313,9 +315,10 @@ function deriveNotes(permitType: string, permitSubtype: string, purpose: string)
   }
   if (descriptor.includes('shell') || descriptor.includes('foundation') || descriptor.includes('new')) {
     whyItMatters = 'Early-stage commercial work where core trades and exterior systems can position before the job tightens up.';
-    trades.push('concrete', 'steel', 'framing', 'roofing', 'electrical');
+    trades.push('concrete', 'steel', 'framing', 'electrical', 'plumbing', 'HVAC');
+    if (!suppressRoofing) trades.push('roofing');
   }
-  if (descriptor.includes('roof') || descriptor.includes('siding')) {
+  if (!suppressRoofing && (descriptor.includes('roof') || descriptor.includes('siding'))) {
     whyItMatters = 'Envelope-focused permit with roofing, sheet metal, and exterior repair scopes likely relevant.';
     trades.push('roofing', 'sheet metal', 'waterproofing', 'exterior finishes');
   }
@@ -401,6 +404,7 @@ function toProject(feature: ArcgisFeature): PermitProject | null {
     contactName,
     contactPhone,
     contactEmail,
+    rawPurpose,
     purpose,
     readableSummary,
     tradeSummary: readableSummary,
@@ -412,8 +416,55 @@ function toProject(feature: ArcgisFeature): PermitProject | null {
     likelyTradesNote: `Likely trades involved: ${likelyTrades.join(', ')}.`,
     likelyTrades,
     coordinates: { lat, lon },
-    rawFields
+    rawFields,
+    aiSource: 'rule'
   };
+}
+
+function textsOverlap(left: string, right: string): boolean {
+  const a = left.toLowerCase().replace(/[^\w]+/g, ' ').trim();
+  const b = right.toLowerCase().replace(/[^\w]+/g, ' ').trim();
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+async function enrichProjectNarrative(project: PermitProject, trade: string): Promise<PermitProject> {
+  const aiNarrative = await generateAiNarrative({
+    permitNumber: project.permitNumber,
+    permitType: project.permitType,
+    permitSubtype: project.permitSubtype,
+    purpose: project.purpose || project.rawPurpose,
+    valuation: project.valuation,
+    trade,
+    likelyTrades: project.likelyTrades
+  });
+
+  if (!aiNarrative) {
+    return {
+      ...project,
+      tradeSummary: trade ? project.tradeSummary : project.tradeSummary,
+      aiSource: 'rule'
+    };
+  }
+
+  const snapshot = aiNarrative.snapshot || project.readableSummary;
+  const whyItMatters = aiNarrative.whyItMatters && !textsOverlap(aiNarrative.whyItMatters, snapshot) ? aiNarrative.whyItMatters : '';
+  const tradeSummary = aiNarrative.tradeNote && !textsOverlap(aiNarrative.tradeNote, whyItMatters || snapshot) ? aiNarrative.tradeNote : project.tradeSummary;
+
+  return {
+    ...project,
+    readableSummary: snapshot,
+    whyItMatters: whyItMatters || project.whyItMatters,
+    tradeSummary,
+    aiSource: 'ai'
+  };
+}
+
+async function enrichProjects(projects: PermitProject[], trade = ''): Promise<PermitProject[]> {
+  const limit = 40;
+  const leading = await Promise.all(projects.slice(0, limit).map((project) => enrichProjectNarrative(project, trade)));
+  if (projects.length <= limit) return leading;
+  return [...leading, ...projects.slice(limit)];
 }
 
 async function loadProjects(): Promise<CacheValue> {
@@ -560,16 +611,17 @@ function buildActiveContacts(projects: PermitProject[]): ActiveContact[] {
   return [...buckets.values()].sort((left, right) => right.projectCount - left.projectCount || right.totalValuation - left.totalValuation);
 }
 
-export async function getDashboardPayload(input?: Partial<DashboardFilters>): Promise<DashboardPayload> {
+export async function getDashboardPayload(input?: Partial<DashboardFilters>, trade = ''): Promise<DashboardPayload> {
   const { projects, fetchedAt } = await loadProjects();
   const filters = sanitizeFilters(input);
   const filteredProjects = sortProjects(projects.filter((project) => matchesFilters(project, filters)), filters.sort);
+  const enrichedProjects = await enrichProjects(filteredProjects.slice(0, 120), trade);
 
   return {
     filters,
     summary: summarize(filteredProjects),
-    featured: filteredProjects.slice(0, 5),
-    projects: filteredProjects.slice(0, 120),
+    featured: enrichedProjects.slice(0, 5),
+    projects: enrichedProjects,
     activeContacts: buildActiveContacts(filteredProjects),
     availablePermitTypes: Array.from(new Set(projects.map((project) => project.permitSubtype || project.permitType).filter(Boolean))).sort(),
     availableNeighborhoods: Array.from(new Set(projects.map((project) => project.neighborhood).filter(Boolean))).sort(),
@@ -577,25 +629,28 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>): Pr
   };
 }
 
-export async function getProjectById(id: string): Promise<PermitProject | null> {
+export async function getProjectById(id: string, trade = ''): Promise<PermitProject | null> {
   const { projects } = await loadProjects();
-  return projects.find((project) => project.id === id) || null;
+  const project = projects.find((project) => project.id === id) || null;
+  if (!project) return null;
+  return enrichProjectNarrative(project, trade);
 }
 
-export async function getProjectsByContact(name: string, filters?: Partial<DashboardFilters>): Promise<DashboardPayload & { contactName: string }> {
+export async function getProjectsByContact(name: string, filters?: Partial<DashboardFilters>, trade = ''): Promise<DashboardPayload & { contactName: string }> {
   const { projects: allProjects, fetchedAt } = await loadProjects();
   const nextFilters = sanitizeFilters(filters);
   const projects = allProjects.filter(
     (project) => project.contactName.toLowerCase() === name.toLowerCase() && matchesFilters(project, nextFilters)
   );
   const sorted = sortProjects(projects, nextFilters.sort);
+  const enrichedProjects = await enrichProjects(sorted, trade);
 
   return {
     filters: nextFilters,
     contactName: name,
     summary: summarize(sorted),
-    featured: sorted.slice(0, 5),
-    projects: sorted,
+    featured: enrichedProjects.slice(0, 5),
+    projects: enrichedProjects,
     activeContacts: buildActiveContacts(sorted),
     availablePermitTypes: Array.from(new Set(allProjects.map((project) => project.permitSubtype || project.permitType).filter(Boolean))).sort(),
     availableNeighborhoods: Array.from(new Set(allProjects.map((project) => project.neighborhood).filter(Boolean))).sort(),

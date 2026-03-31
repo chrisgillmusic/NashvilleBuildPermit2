@@ -20,12 +20,18 @@ Mobile-first Next.js app that pulls live Nashville permit data from the Metro Ar
    ```bash
    npm install
    ```
-2. Start the dev server:
+2. Optional: enable AI-assisted permit summaries by setting:
+   ```bash
+   OPENAI_API_KEY=your_key_here
+   OPENAI_MODEL=gpt-4.1-mini
+   OPENAI_TIMEOUT_MS=6000
+   ```
+3. Start the dev server:
    ```bash
    npm run dev
    ```
-3. Open [http://localhost:3000](http://localhost:3000)
-4. To preview on your phone, keep the phone on the same network and open:
+4. Open [http://localhost:3000](http://localhost:3000)
+5. To preview on your phone, keep the phone on the same network and open:
    ```bash
    http://YOUR_COMPUTER_IP:3000
    ```
@@ -34,3 +40,4 @@ Mobile-first Next.js app that pulls live Nashville permit data from the Metro Ar
 - The first load can take longer because the app fetches the full ArcGIS permit dataset and normalizes it server-side.
 - The app keeps a short in-process cache so repeated refreshes stay fast during local preview.
 - The live JSON endpoint for the dashboard is `/api/permits`.
+- If AI env vars are not set, the app automatically falls back to the built-in rule-based project summaries and trade notes.
