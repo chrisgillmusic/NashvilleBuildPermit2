@@ -42,7 +42,7 @@ type TimeframeResolution = {
 
 const PROFILE_KEY = 'nbi-profile-v1';
 const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 4 • AI Verification';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 5 • AI Pipeline';
 
 const ONBOARDING_CARDS = [
   'Nashville Build Insider scans live permit data to surface real construction opportunities.',
@@ -220,6 +220,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [debugBypassCache, setDebugBypassCache] = useState(true);
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const [isGeneratingVisibleAi, setIsGeneratingVisibleAi] = useState(false);
   const [isTestingAi, setIsTestingAi] = useState(false);
   const [aiTestResult, setAiTestResult] = useState<string>('');
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
@@ -351,6 +352,20 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
     onboardingTrackRef.current?.children[nextIndex]?.scrollIntoView({ behavior: 'smooth', inline: 'center' });
   }
 
+  async function refreshPayload() {
+    const response = await fetch(`/api/permits?${requestQuery}`, {
+      cache: 'no-store'
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to refresh permits');
+    }
+
+    const nextPayload = (await response.json()) as DashboardPayload;
+    startTransition(() => setPayload(nextPayload));
+    return nextPayload;
+  }
+
   async function handleRegenerate() {
     const id = debugProjectId.trim();
     if (!id) return;
@@ -373,11 +388,10 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
         return;
       }
 
+      await refreshPayload();
       startTransition(() =>
         setPayload((current) => ({
           ...current,
-          projects: current.projects.map((project) => (project.id === result.project?.id ? result.project : project)),
-          featured: current.featured.map((project) => (project.id === result.project?.id ? result.project : project)),
           debug: result.debug
         }))
       );
@@ -438,6 +452,50 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       );
     } finally {
       setIsTestingAi(false);
+    }
+  }
+
+  async function handleGenerateVisibleAi() {
+    if (!visibleProjects.length) {
+      setRegenerateStatus('No visible jobs to generate.');
+      return;
+    }
+
+    setIsGeneratingVisibleAi(true);
+    setRegenerateStatus(null);
+
+    try {
+      const response = await fetch('/api/permits/generate-ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ids: visibleProjects.map((project) => project.id),
+          trade: profile.trade,
+          bypassCache: debugBypassCache
+        })
+      });
+
+      if (!response.ok) throw new Error('Failed to generate AI for visible jobs');
+
+      const result = (await response.json()) as {
+        results: Array<{ id: string; summarySource: 'ai' | 'fallback'; cacheStatus: string }>;
+        debug: DashboardPayload['debug'];
+      };
+
+      const nextPayload = await refreshPayload();
+      startTransition(() =>
+        setPayload({
+          ...nextPayload,
+          debug: result.debug
+        })
+      );
+      setRegenerateStatus(
+        `Stored AI for ${result.results.filter((entry) => entry.summarySource === 'ai').length} of ${result.results.length} visible jobs.`
+      );
+    } catch (error) {
+      setRegenerateStatus((error as Error).message);
+    } finally {
+      setIsGeneratingVisibleAi(false);
     }
   }
 
@@ -779,6 +837,14 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last trade source</div>
                       <div className="mt-1 font-semibold text-white">{payload.debug.lastTradeSource}</div>
                     </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Stored AI in current view</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.storedAiCount}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3 sm:col-span-2">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last generate action</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.lastGenerateActionResult || 'No generate action yet'}</div>
+                    </div>
                   </div>
 
                   <div className="mt-4">
@@ -814,6 +880,18 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                         )}
                       >
                         {isRegenerating ? 'Generating…' : 'Generate AI now'}
+                      </button>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <button
+                        onClick={handleGenerateVisibleAi}
+                        disabled={isGeneratingVisibleAi || !visibleProjects.length}
+                        className={clsx(
+                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
+                          isGeneratingVisibleAi || !visibleProjects.length ? 'bg-white/10 text-stone-500' : 'bg-white text-stone-950'
+                        )}
+                      >
+                        {isGeneratingVisibleAi ? 'Generating Visible AI…' : 'Generate AI for Visible Jobs'}
                       </button>
                     </div>
                     {regenerateStatus ? <div className="mt-3 text-sm text-stone-300">{regenerateStatus}</div> : null}

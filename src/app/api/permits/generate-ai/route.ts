@@ -12,8 +12,5 @@ export async function POST(request: NextRequest) {
   }
 
   const result = await generateAiForProjects(ids, body.trade || '', { bypassCache: body.bypassCache ?? false });
-  return NextResponse.json({
-    ...result,
-    alias: 'prewarm-ai'
-  });
+  return NextResponse.json(result);
 }

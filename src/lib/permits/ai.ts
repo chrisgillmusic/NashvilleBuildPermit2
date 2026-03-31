@@ -1,9 +1,16 @@
 import 'server-only';
 
-import { createHash } from 'crypto';
 import OpenAI from 'openai';
+import { createHash } from 'node:crypto';
+import { prisma } from '@/lib/db';
+import type { InterpretationSource } from './types';
 
-type NarrativeInput = {
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 5 • AI Pipeline';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const AI_TIMEOUT_MS = 12_000;
+const STORAGE_PREFIX = 'ai_interpretation:v1:';
+
+export type NarrativeInput = {
   projectId: string;
   permitNumber: string;
   address: string;
@@ -11,138 +18,118 @@ type NarrativeInput = {
   permitSubtype: string;
   purpose: string;
   valuation: number;
-  trade: string;
   neighborhood: string;
   contactName: string;
   timeBucket: string;
+  trade: string;
   likelyTrades: string[];
 };
 
-export type AiInterpretation = {
+export type AiNarrative = {
   summary: string;
   whyItMatters: string;
   tradeReason: string;
   isTradeRelevant: boolean;
 };
 
-type CacheStatus = 'hit' | 'miss' | 'refreshed' | 'unknown';
-
-type AiCacheEntry = {
-  cacheKey: string;
+export type StoredAiInterpretation = {
   projectId: string;
   trade: string;
   sourceHash: string;
-  storedAt: string;
-  interpretation: AiInterpretation;
+  cacheKey: string;
+  source: 'ai';
+  generatedAt: string;
+  version: string;
+  interpretation: AiNarrative;
+};
+
+export type StoredAiLookup = {
+  cacheKey: string;
+  cacheStatus: 'hit' | 'miss';
+  interpretation: StoredAiInterpretation | null;
 };
 
 export type AiDebugResult = {
   attempted: boolean;
-  resultSource: 'ai' | 'fallback';
+  resultSource: InterpretationSource;
   failureReason: string;
   rawResponseText: string;
   rawResponseShape: string;
-  parsed: AiInterpretation | null;
-  cacheStatus: CacheStatus;
-  cacheKey: string;
+  cacheStatus: string;
+  parsed: AiNarrative | null;
+  stored: boolean;
+};
+
+type StoredValueShape = {
+  projectId: string;
+  trade: string;
   sourceHash: string;
+  generatedAt: string;
+  version: string;
+  source: 'ai';
+  interpretation: AiNarrative;
 };
 
-const AI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 6000);
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const OPENAI_API_URL = (process.env.OPENAI_API_URL || 'https://api.openai.com/v1').replace(/\/responses\/?$/, '');
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 4 • AI Verification';
-
-const cacheEntries = new Map<string, AiCacheEntry>();
-const generationInFlight = new Map<string, Promise<AiDebugResult>>();
-
-let lastAiDebug: AiDebugResult = {
-  attempted: false,
-  resultSource: 'fallback',
-  failureReason: 'not run yet',
-  rawResponseText: '',
-  rawResponseShape: '',
-  parsed: null,
-  cacheStatus: 'unknown',
-  cacheKey: '',
-  sourceHash: ''
+type AiDebugState = {
+  aiEnabled: boolean;
+  apiKeyPresent: boolean;
+  appVersion: string;
+  lastAiCallAttempted: boolean;
+  lastAiResultSource: InterpretationSource | 'unknown';
+  lastAiFailureReason: string;
+  lastCacheStatus: string;
 };
 
-function normalizeTrade(trade: string): string {
-  return trade.trim().toLowerCase() || 'all';
+const client = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+const memoryCache = new Map<string, StoredAiInterpretation>();
+const inFlight = new Map<string, Promise<AiDebugResult>>();
+
+let debugState: AiDebugState = {
+  aiEnabled: Boolean(client),
+  apiKeyPresent: Boolean(process.env.OPENAI_API_KEY),
+  appVersion: APP_VERSION,
+  lastAiCallAttempted: false,
+  lastAiResultSource: 'unknown',
+  lastAiFailureReason: 'idle',
+  lastCacheStatus: 'miss'
+};
+
+function setDebugState(update: Partial<AiDebugState>) {
+  debugState = { ...debugState, ...update };
 }
 
-function buildSourceHash(input: NarrativeInput): string {
-  return createHash('sha1')
-    .update(
-      JSON.stringify({
-        permitNumber: input.permitNumber,
-        address: input.address,
-        permitType: input.permitType,
-        permitSubtype: input.permitSubtype,
-        purpose: input.purpose,
-        valuation: input.valuation,
-        neighborhood: input.neighborhood,
-        contactName: input.contactName,
-        timeBucket: input.timeBucket
-      })
-    )
-    .digest('hex');
+function normalizeTrade(value: string): string {
+  return value.trim().toLowerCase();
 }
 
-function buildCacheKey(input: NarrativeInput): string {
-  return `${input.projectId}::${normalizeTrade(input.trade)}::${buildSourceHash(input)}`;
+function tradeToken(value: string): string {
+  const normalized = normalizeTrade(value);
+  if (!normalized) return 'all';
+  return normalized.replace(/[^\w]+/g, '-').replace(/^-+|-+$/g, '') || 'all';
 }
 
-function enabled(): boolean {
-  return Boolean(process.env.OPENAI_API_KEY);
-}
+function shapeFromResponse(response: unknown): string {
+  if (!response || typeof response !== 'object') return typeof response;
 
-function setLastAiDebug(result: AiDebugResult): AiDebugResult {
-  lastAiDebug = result;
-  return result;
-}
-
-function pruneOldEntries(projectId: string, trade: string, nextKey: string) {
-  const prefix = `${projectId}::${normalizeTrade(trade)}::`;
-  for (const key of cacheEntries.keys()) {
-    if (key.startsWith(prefix) && key !== nextKey) {
-      cacheEntries.delete(key);
-    }
-  }
-}
-
-function summarizeResponseShape(response: unknown): string {
-  if (!response || typeof response !== 'object') return 'invalid response object';
-
-  const data = response as {
-    id?: string;
-    status?: string;
-    error?: unknown;
-    incomplete_details?: unknown;
-    output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>;
+  const maybeResponse = response as {
+    output_text?: unknown;
+    output?: Array<{ type?: string; content?: Array<{ type?: string }> }>;
   };
 
-  try {
-    return JSON.stringify({
-      id: data.id || null,
-      status: data.status || null,
-      error: data.error || null,
-      incomplete_details: data.incomplete_details || null,
-      output_types: Array.isArray(data.output) ? data.output.map((item) => item?.type || 'unknown') : []
-    });
-  } catch {
-    return 'unserializable response shape';
-  }
+  return JSON.stringify({
+    hasOutputText: typeof maybeResponse.output_text === 'string' && maybeResponse.output_text.length > 0,
+    outputItems:
+      maybeResponse.output?.map((item) => ({
+        type: item.type || 'unknown',
+        contentTypes: item.content?.map((content) => content.type || 'unknown') || []
+      })) || []
+  });
 }
 
-function extractOutputText(response: unknown): { text: string; shape: string } {
-  if (!response || typeof response !== 'object') {
-    return { text: '', shape: 'invalid response object' };
-  }
-
-  const data = response as {
-    output_text?: string;
+function extractResponseText(response: unknown): { text: string; shape: string } {
+  const shape = shapeFromResponse(response);
+  const maybeResponse = response as {
+    output_text?: unknown;
     output?: Array<{
       type?: string;
       content?: Array<{
@@ -152,291 +139,529 @@ function extractOutputText(response: unknown): { text: string; shape: string } {
     }>;
   };
 
-  if (typeof data.output_text === 'string' && data.output_text.trim()) {
-    return { text: data.output_text.trim(), shape: summarizeResponseShape(response) };
+  if (typeof maybeResponse?.output_text === 'string' && maybeResponse.output_text.trim()) {
+    return { text: maybeResponse.output_text.trim(), shape };
   }
 
   const chunks: string[] = [];
-  for (const item of data.output || []) {
-    if (item?.type !== 'message') continue;
+  for (const item of maybeResponse?.output || []) {
     for (const content of item.content || []) {
-      if (content?.type === 'output_text' && typeof content.text === 'string' && content.text.trim()) {
+      if (content.type === 'output_text' && typeof content.text === 'string' && content.text.trim()) {
         chunks.push(content.text.trim());
       }
     }
   }
 
-  return { text: chunks.join('\n').trim(), shape: summarizeResponseShape(response) };
+  return { text: chunks.join('\n').trim(), shape };
 }
 
-function extractJson(text: string): { parsed: AiInterpretation | null; reason: string } {
-  const cleaned = text.replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
+function maybeExtractJsonBlock(text: string): string {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) return fenced[1].trim();
+
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    return text.slice(firstBrace, lastBrace + 1).trim();
+  }
+
+  return text.trim();
+}
+
+function normalizeNarrativeText(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+function textsOverlap(left: string, right: string): boolean {
+  const a = left.toLowerCase().replace(/[^\w]+/g, ' ').trim();
+  const b = right.toLowerCase().replace(/[^\w]+/g, ' ').trim();
+  if (!a || !b) return false;
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+function parseAiNarrative(text: string): { parsed: AiNarrative | null; failureReason: string } {
+  const json = maybeExtractJsonBlock(text);
+  let parsedValue: unknown;
 
   try {
-    const parsed = JSON.parse(cleaned) as Partial<AiInterpretation>;
-    if (!parsed.summary) return { parsed: null, reason: 'missing summary field' };
-    if (typeof parsed.isTradeRelevant !== 'boolean') return { parsed: null, reason: 'missing boolean isTradeRelevant field' };
-
-    return {
-      parsed: {
-        summary: parsed.summary.trim(),
-        whyItMatters: (parsed.whyItMatters || '').trim(),
-        tradeReason: (parsed.tradeReason || '').trim(),
-        isTradeRelevant: parsed.isTradeRelevant
-      },
-      reason: 'success'
-    };
+    parsedValue = JSON.parse(json);
   } catch (error) {
-    return { parsed: null, reason: `invalid JSON: ${(error as Error).message}` };
+    return { parsed: null, failureReason: `invalid JSON: ${(error as Error).message}` };
+  }
+
+  const summary = normalizeNarrativeText((parsedValue as Record<string, unknown>)?.summary);
+  const whyItMatters = normalizeNarrativeText((parsedValue as Record<string, unknown>)?.whyItMatters);
+  const tradeReason = normalizeNarrativeText((parsedValue as Record<string, unknown>)?.tradeReason);
+  const isTradeRelevant = (parsedValue as Record<string, unknown>)?.isTradeRelevant;
+
+  if (!summary) {
+    return { parsed: null, failureReason: 'missing summary field' };
+  }
+
+  if (typeof isTradeRelevant !== 'boolean') {
+    return { parsed: null, failureReason: 'missing boolean isTradeRelevant field' };
+  }
+
+  return {
+    parsed: {
+      summary,
+      whyItMatters: whyItMatters && !textsOverlap(whyItMatters, summary) ? whyItMatters : '',
+      tradeReason:
+        tradeReason && !textsOverlap(tradeReason, summary) && !textsOverlap(tradeReason, whyItMatters) ? tradeReason : '',
+      isTradeRelevant
+    },
+    failureReason: 'success'
+  };
+}
+
+function buildPrompt(input: NarrativeInput): string {
+  return [
+    'You are helping commercial subcontractors quickly understand a Nashville building permit.',
+    'Return strict JSON only with these fields: summary, whyItMatters, tradeReason, isTradeRelevant.',
+    'Rules:',
+    '- summary: 1 sentence preferred, 2 short sentences max, plainspoken and specific.',
+    '- whyItMatters: optional. Use an empty string if it does not add new information.',
+    '- tradeReason: optional. Use an empty string if the selected trade is not a real fit or if the note would be vague.',
+    '- isTradeRelevant: boolean based on the actual scope, not optimism.',
+    '- Do not copy permit sludge or metadata directly unless necessary.',
+    '- Do not imply roofing or exterior work when the permit says no exterior work, no roofline change, or interior-only scope.',
+    '- If the selected trade is not actually implicated, set isTradeRelevant to false and leave tradeReason empty.',
+    '',
+    `Selected trade: ${input.trade || 'None selected'}`,
+    `Address: ${input.address || 'Unknown'}`,
+    `Permit number: ${input.permitNumber || 'Unknown'}`,
+    `Permit type: ${input.permitType || 'Unknown'}`,
+    `Permit subtype: ${input.permitSubtype || 'Unknown'}`,
+    `Neighborhood: ${input.neighborhood || 'Unknown'}`,
+    `Valuation: ${input.valuation ? `$${Math.round(input.valuation).toLocaleString('en-US')}` : 'Unknown'}`,
+    `Time bucket: ${input.timeBucket}`,
+    `Listed contact: ${input.contactName || 'Unknown'}`,
+    `Fallback trade hints: ${input.likelyTrades.join(', ') || 'None'}`,
+    `Permit description: ${input.purpose || 'No description available'}`,
+    '',
+    'Return JSON only.'
+  ].join('\n');
+}
+
+export function buildSourceHash(input: NarrativeInput): string {
+  const serialized = JSON.stringify({
+    projectId: input.projectId,
+    permitNumber: input.permitNumber,
+    address: input.address,
+    permitType: input.permitType,
+    permitSubtype: input.permitSubtype,
+    purpose: input.purpose,
+    valuation: input.valuation,
+    neighborhood: input.neighborhood,
+    contactName: input.contactName,
+    timeBucket: input.timeBucket
+  });
+
+  return createHash('sha1').update(serialized).digest('hex');
+}
+
+export function buildCacheKey(input: NarrativeInput): string {
+  return `${input.projectId}:${tradeToken(input.trade)}:${buildSourceHash(input)}`;
+}
+
+function storageKey(cacheKey: string): string {
+  return `${STORAGE_PREFIX}${cacheKey}`;
+}
+
+function toStoredInterpretation(input: NarrativeInput, narrative: AiNarrative): StoredAiInterpretation {
+  const sourceHash = buildSourceHash(input);
+  const cacheKey = buildCacheKey(input);
+  return {
+    projectId: input.projectId,
+    trade: normalizeTrade(input.trade),
+    sourceHash,
+    cacheKey,
+    source: 'ai',
+    generatedAt: new Date().toISOString(),
+    version: APP_VERSION,
+    interpretation: narrative
+  };
+}
+
+function isStoredValueShape(value: unknown): value is StoredValueShape {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  const interpretation = record.interpretation as Record<string, unknown> | undefined;
+
+  return (
+    typeof record.projectId === 'string' &&
+    typeof record.trade === 'string' &&
+    typeof record.sourceHash === 'string' &&
+    typeof record.generatedAt === 'string' &&
+    typeof record.version === 'string' &&
+    record.source === 'ai' &&
+    Boolean(interpretation) &&
+    typeof interpretation?.summary === 'string' &&
+    typeof interpretation?.whyItMatters === 'string' &&
+    typeof interpretation?.tradeReason === 'string' &&
+    typeof interpretation?.isTradeRelevant === 'boolean'
+  );
+}
+
+function parseStoredRecord(key: string, value: unknown): StoredAiInterpretation | null {
+  if (!isStoredValueShape(value)) return null;
+
+  return {
+    ...value,
+    cacheKey: key
+  };
+}
+
+async function storeInterpretation(record: StoredAiInterpretation): Promise<boolean> {
+  memoryCache.set(record.cacheKey, record);
+
+  try {
+    await prisma.appSetting.upsert({
+      where: { key: storageKey(record.cacheKey) },
+      update: {
+        value: {
+          projectId: record.projectId,
+          trade: record.trade,
+          sourceHash: record.sourceHash,
+          generatedAt: record.generatedAt,
+          version: record.version,
+          source: record.source,
+          interpretation: record.interpretation
+        }
+      },
+      create: {
+        key: storageKey(record.cacheKey),
+        value: {
+          projectId: record.projectId,
+          trade: record.trade,
+          sourceHash: record.sourceHash,
+          generatedAt: record.generatedAt,
+          version: record.version,
+          source: record.source,
+          interpretation: record.interpretation
+        }
+      }
+    });
+
+    return true;
+  } catch (error) {
+    console.error('AI STORAGE FAILED:', (error as Error).message);
+    return false;
   }
 }
 
-async function runOpenAiInterpretation(input: NarrativeInput): Promise<AiDebugResult> {
-  const cacheKey = buildCacheKey(input);
-  const sourceHash = buildSourceHash(input);
+export function getAiDebugState() {
+  return { ...debugState };
+}
 
-  if (!enabled()) {
+export async function getStoredAiInterpretation(input: NarrativeInput): Promise<StoredAiLookup> {
+  const cacheKey = buildCacheKey(input);
+  const hot = memoryCache.get(cacheKey);
+
+  if (hot) {
+    setDebugState({ lastCacheStatus: 'hit' });
+    return {
+      cacheKey,
+      cacheStatus: 'hit',
+      interpretation: hot
+    };
+  }
+
+  try {
+    const row = await prisma.appSetting.findUnique({ where: { key: storageKey(cacheKey) } });
+    if (!row) {
+      setDebugState({ lastCacheStatus: 'miss' });
+      return { cacheKey, cacheStatus: 'miss', interpretation: null };
+    }
+
+    const parsed = parseStoredRecord(cacheKey, row.value);
+    if (!parsed) {
+      setDebugState({ lastCacheStatus: 'miss' });
+      return { cacheKey, cacheStatus: 'miss', interpretation: null };
+    }
+
+    memoryCache.set(cacheKey, parsed);
+    setDebugState({ lastCacheStatus: 'hit' });
+    return { cacheKey, cacheStatus: 'hit', interpretation: parsed };
+  } catch (error) {
+    console.error('AI STORAGE READ FAILED:', (error as Error).message);
+    setDebugState({ lastCacheStatus: 'miss' });
+    return { cacheKey, cacheStatus: 'miss', interpretation: null };
+  }
+}
+
+export async function getStoredAiInterpretations(inputs: NarrativeInput[]): Promise<Map<string, StoredAiLookup>> {
+  const lookups = new Map<string, StoredAiLookup>();
+  const misses: Array<{ input: NarrativeInput; cacheKey: string }> = [];
+
+  for (const input of inputs) {
+    const cacheKey = buildCacheKey(input);
+    const hot = memoryCache.get(cacheKey);
+
+    if (hot) {
+      lookups.set(input.projectId, { cacheKey, cacheStatus: 'hit', interpretation: hot });
+      continue;
+    }
+
+    misses.push({ input, cacheKey });
+  }
+
+  if (misses.length) {
+    try {
+      const rows = await prisma.appSetting.findMany({
+        where: {
+          key: {
+            in: misses.map((entry) => storageKey(entry.cacheKey))
+          }
+        }
+      });
+
+      const byKey = new Map(rows.map((row) => [row.key, row.value]));
+
+      for (const miss of misses) {
+        const parsed = parseStoredRecord(miss.cacheKey, byKey.get(storageKey(miss.cacheKey)));
+        if (parsed) {
+          memoryCache.set(miss.cacheKey, parsed);
+          lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'hit', interpretation: parsed });
+        } else {
+          lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'miss', interpretation: null });
+        }
+      }
+    } catch (error) {
+      console.error('AI STORAGE BATCH READ FAILED:', (error as Error).message);
+      for (const miss of misses) {
+        lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'miss', interpretation: null });
+      }
+    }
+  }
+
+  setDebugState({ lastCacheStatus: lookups.size && [...lookups.values()].some((entry) => entry.cacheStatus === 'hit') ? 'hit' : 'miss' });
+  return lookups;
+}
+
+export async function generateAndStoreAiInterpretation(
+  input: NarrativeInput,
+  options?: { bypassCache?: boolean }
+): Promise<AiDebugResult> {
+  const cacheKey = buildCacheKey(input);
+
+  if (!client) {
     console.log('AI SKIPPED: missing key');
+    setDebugState({
+      lastAiCallAttempted: false,
+      lastAiResultSource: 'fallback',
+      lastAiFailureReason: 'missing key',
+      lastCacheStatus: 'miss'
+    });
     return {
       attempted: false,
       resultSource: 'fallback',
       failureReason: 'missing key',
       rawResponseText: '',
       rawResponseShape: '',
-      parsed: null,
       cacheStatus: 'miss',
-      cacheKey,
-      sourceHash
-    };
-  }
-
-  const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    baseURL: OPENAI_API_URL
-  });
-
-  try {
-    const prompt = [
-      'You are interpreting commercial permit data for a Nashville subcontractor app.',
-      'Return strict JSON with keys: summary, whyItMatters, tradeReason, isTradeRelevant.',
-      'summary: the main visible description. One sentence preferred, two short sentences max.',
-      'whyItMatters: optional. Only add it if it contributes something new beyond summary. Otherwise use an empty string.',
-      'tradeReason: optional. Explain briefly why the selected trade is relevant or not relevant. If no trade is selected or there is nothing useful to add, use an empty string.',
-      'isTradeRelevant: true or false based on the selected trade and the permit context.',
-      'Write in plainspoken English for a working subcontractor.',
-      'Be direct, specific, and human. No hype. No corporate tone. No giant trade lists.',
-      'Do not copy messy permit text unless a detail is necessary.',
-      'Use the full context to reason about what work is actually happening and what is excluded.',
-      'If the permit says no change to exterior, no roofline change, interior only, or similar, exterior trades like roofing should usually be excluded unless the permit clearly says roof or exterior work is happening.',
-      'If a permit suggests a trade is excluded, set isTradeRelevant to false and keep tradeReason short.',
-      JSON.stringify({
-        permitNumber: input.permitNumber,
-        address: input.address,
-        permitType: input.permitType,
-        permitSubtype: input.permitSubtype,
-        purpose: input.purpose,
-        valuation: input.valuation,
-        neighborhood: input.neighborhood,
-        contactName: input.contactName,
-        timeBucket: input.timeBucket,
-        selectedTrade: input.trade || null,
-        likelyTrades: input.likelyTrades
-      })
-    ].join('\n');
-
-    console.log('AI CALLED');
-    console.log('AI REQUEST START');
-
-    const response = await Promise.race([
-      client.responses.create({
-        model: OPENAI_MODEL,
-        input: prompt
-      }),
-      new Promise<'timeout'>((resolve) => {
-        setTimeout(() => resolve('timeout'), AI_TIMEOUT_MS);
-      })
-    ]);
-
-    if (response === 'timeout') {
-      console.log('AI SKIPPED: timeout');
-      return {
-        attempted: true,
-        resultSource: 'fallback',
-        failureReason: 'timeout',
-        rawResponseText: '',
-        rawResponseShape: '',
-        parsed: null,
-        cacheStatus: 'miss',
-        cacheKey,
-        sourceHash
-      };
-    }
-
-    console.log('AI REQUEST SUCCESS');
-
-    const { text, shape } = extractOutputText(response);
-    if (!text) {
-      console.log('AI EMPTY OUTPUT');
-      console.log('AI RESPONSE SHAPE:', shape);
-      return {
-        attempted: true,
-        resultSource: 'fallback',
-        failureReason: 'empty output',
-        rawResponseText: '',
-        rawResponseShape: shape,
-        parsed: null,
-        cacheStatus: 'miss',
-        cacheKey,
-        sourceHash
-      };
-    }
-
-    const parsed = extractJson(text);
-    if (!parsed.parsed) {
-      console.log('AI PARSE FAILED:', parsed.reason);
-      console.log('AI RESULT:', text);
-      console.log('AI RESPONSE SHAPE:', shape);
-      return {
-        attempted: true,
-        resultSource: 'fallback',
-        failureReason: parsed.reason,
-        rawResponseText: text,
-        rawResponseShape: shape,
-        parsed: null,
-        cacheStatus: 'miss',
-        cacheKey,
-        sourceHash
-      };
-    }
-
-    console.log('AI SUCCESS');
-    console.log('AI RESULT:', parsed.parsed);
-
-    return {
-      attempted: true,
-      resultSource: 'ai',
-      failureReason: 'success',
-      rawResponseText: text,
-      rawResponseShape: shape,
-      parsed: parsed.parsed,
-      cacheStatus: 'refreshed',
-      cacheKey,
-      sourceHash
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.log(`AI REQUEST FAILED: ${message}`);
-    return {
-      attempted: true,
-      resultSource: 'fallback',
-      failureReason: `request failed: ${message}`,
-      rawResponseText: '',
-      rawResponseShape: '',
       parsed: null,
-      cacheStatus: 'miss',
-      cacheKey,
-      sourceHash
+      stored: false
     };
   }
-}
-
-export function getAiDebugState() {
-  return {
-    aiEnabled: enabled(),
-    apiKeyPresent: Boolean(process.env.OPENAI_API_KEY),
-    appVersion: APP_VERSION,
-    lastAiCallAttempted: lastAiDebug.attempted,
-    lastAiResultSource: lastAiDebug.resultSource,
-    lastAiFailureReason: lastAiDebug.failureReason,
-    lastCacheStatus: lastAiDebug.cacheStatus
-  };
-}
-
-export function getLastAiDebugResult(): AiDebugResult {
-  return lastAiDebug;
-}
-
-export async function getCachedAiInterpretation(input: NarrativeInput): Promise<{ interpretation: AiInterpretation | null; cacheStatus: CacheStatus; cacheKey: string; sourceHash: string }> {
-  const cacheKey = buildCacheKey(input);
-  const sourceHash = buildSourceHash(input);
-  const entry = cacheEntries.get(cacheKey);
-
-  if (!entry) {
-    return { interpretation: null, cacheStatus: 'miss', cacheKey, sourceHash };
-  }
-
-  setLastAiDebug({
-    attempted: false,
-    resultSource: 'ai',
-    failureReason: 'cache hit',
-    rawResponseText: '',
-    rawResponseShape: '',
-    parsed: entry.interpretation,
-    cacheStatus: 'hit',
-    cacheKey,
-    sourceHash
-  });
-
-  return { interpretation: entry.interpretation, cacheStatus: 'hit', cacheKey, sourceHash };
-}
-
-export async function generateAndStoreAiInterpretation(input: NarrativeInput, options?: { bypassCache?: boolean }): Promise<AiDebugResult> {
-  const cacheKey = buildCacheKey(input);
-  const sourceHash = buildSourceHash(input);
 
   if (!options?.bypassCache) {
-    const cached = cacheEntries.get(cacheKey);
-    if (cached) {
+    const cached = await getStoredAiInterpretation(input);
+    if (cached.interpretation) {
       console.log('AI CACHE HIT');
-      return setLastAiDebug({
+      setDebugState({
+        lastAiCallAttempted: false,
+        lastAiResultSource: 'ai',
+        lastAiFailureReason: 'cache hit',
+        lastCacheStatus: 'hit'
+      });
+      return {
         attempted: false,
         resultSource: 'ai',
         failureReason: 'cache hit',
         rawResponseText: '',
         rawResponseShape: '',
-        parsed: cached.interpretation,
         cacheStatus: 'hit',
-        cacheKey,
-        sourceHash
-      });
+        parsed: cached.interpretation.interpretation,
+        stored: true
+      };
     }
   }
 
-  const inflight = generationInFlight.get(cacheKey);
-  if (inflight && !options?.bypassCache) {
-    return inflight.then((result) => setLastAiDebug(result));
+  const existing = inFlight.get(cacheKey);
+  if (existing) {
+    return existing;
   }
 
-  const promise: Promise<AiDebugResult> = runOpenAiInterpretation(input).then((result) => {
-    if (result.parsed) {
-      pruneOldEntries(input.projectId, input.trade, cacheKey);
-      cacheEntries.set(cacheKey, {
-        cacheKey,
-        projectId: input.projectId,
-        trade: normalizeTrade(input.trade),
-        sourceHash,
-        storedAt: new Date().toISOString(),
-        interpretation: result.parsed
+  const promise = (async (): Promise<AiDebugResult> => {
+    console.log('AI CALLED');
+    console.log('AI REQUEST START');
+    setDebugState({
+      lastAiCallAttempted: true,
+      lastAiResultSource: 'fallback',
+      lastAiFailureReason: 'in progress',
+      lastCacheStatus: options?.bypassCache ? 'refreshing' : 'miss'
+    });
+
+    const timeoutSignal = AbortSignal.timeout(AI_TIMEOUT_MS);
+
+    try {
+      const response = await client.responses.create({
+        model: OPENAI_MODEL,
+        input: buildPrompt(input)
+      }, {
+        signal: timeoutSignal
       });
+
+      console.log('AI REQUEST SUCCESS');
+      const { text, shape } = extractResponseText(response);
+
+      if (!text) {
+        console.log('AI EMPTY OUTPUT');
+        setDebugState({
+          lastAiResultSource: 'fallback',
+          lastAiFailureReason: 'empty output',
+          lastCacheStatus: 'miss'
+        });
+        return {
+          attempted: true,
+          resultSource: 'fallback',
+          failureReason: 'empty output',
+          rawResponseText: '',
+          rawResponseShape: shape,
+          cacheStatus: 'miss',
+          parsed: null,
+          stored: false
+        };
+      }
+
+      const parsedResult = parseAiNarrative(text);
+      if (!parsedResult.parsed) {
+        console.log('AI PARSE FAILED:', parsedResult.failureReason);
+        setDebugState({
+          lastAiResultSource: 'fallback',
+          lastAiFailureReason: parsedResult.failureReason,
+          lastCacheStatus: 'miss'
+        });
+        return {
+          attempted: true,
+          resultSource: 'fallback',
+          failureReason: parsedResult.failureReason,
+          rawResponseText: text,
+          rawResponseShape: shape,
+          cacheStatus: 'miss',
+          parsed: null,
+          stored: false
+        };
+      }
+
+      console.log('AI SUCCESS');
+      console.log('AI RESULT:', parsedResult.parsed);
+      const record = toStoredInterpretation(input, parsedResult.parsed);
+      const stored = await storeInterpretation(record);
+      setDebugState({
+        lastAiResultSource: 'ai',
+        lastAiFailureReason: 'success',
+        lastCacheStatus: stored ? options?.bypassCache ? 'refreshed' : 'stored' : 'stored-in-memory'
+      });
+
+      return {
+        attempted: true,
+        resultSource: 'ai',
+        failureReason: 'success',
+        rawResponseText: text,
+        rawResponseShape: shape,
+        cacheStatus: stored ? options?.bypassCache ? 'refreshed' : 'stored' : 'stored-in-memory',
+        parsed: parsedResult.parsed,
+        stored
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.toLowerCase().includes('timeout') || message.toLowerCase().includes('aborted')) {
+        console.log('AI SKIPPED: timeout');
+        setDebugState({
+          lastAiResultSource: 'fallback',
+          lastAiFailureReason: 'timeout',
+          lastCacheStatus: 'miss'
+        });
+        return {
+          attempted: true,
+          resultSource: 'fallback',
+          failureReason: 'timeout',
+          rawResponseText: '',
+          rawResponseShape: '',
+          cacheStatus: 'miss',
+          parsed: null,
+          stored: false
+        };
+      }
+
+      console.log(`AI REQUEST FAILED: ${message}`);
+      setDebugState({
+        lastAiResultSource: 'fallback',
+        lastAiFailureReason: `request failed: ${message}`,
+        lastCacheStatus: 'miss'
+      });
+      return {
+        attempted: true,
+        resultSource: 'fallback',
+        failureReason: `request failed: ${message}`,
+        rawResponseText: '',
+        rawResponseShape: '',
+        cacheStatus: 'miss',
+        parsed: null,
+        stored: false
+      };
+    } finally {
+      inFlight.delete(cacheKey);
     }
-    return result;
-  });
+  })();
 
-  generationInFlight.set(cacheKey, promise);
-
-  try {
-    const result = await promise;
-    return setLastAiDebug(result);
-  } finally {
-    generationInFlight.delete(cacheKey);
-  }
+  inFlight.set(cacheKey, promise);
+  return promise;
 }
 
-export async function clearAiNarrativeCache(key?: string) {
+export async function generateAndStoreAiInterpretations(
+  inputs: NarrativeInput[],
+  options?: { bypassCache?: boolean; concurrency?: number }
+) {
+  const concurrency = Math.max(1, Math.min(options?.concurrency ?? 2, 4));
+  const results: Array<{
+    id: string;
+    summarySource: InterpretationSource;
+    tradeSource: InterpretationSource;
+    cacheStatus: string;
+    failureReason: string;
+    stored: boolean;
+  }> = new Array(inputs.length);
+  let cursor = 0;
+
+  async function run(): Promise<void> {
+    while (cursor < inputs.length) {
+      const current = cursor;
+      cursor += 1;
+      const input = inputs[current];
+      const result = await generateAndStoreAiInterpretation(input, options);
+      results[current] = {
+        id: input.projectId,
+        summarySource: result.resultSource,
+        tradeSource: input.trade ? result.resultSource : 'fallback',
+        cacheStatus: result.cacheStatus,
+        failureReason: result.failureReason,
+        stored: result.stored
+      };
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, inputs.length || 1) }, () => run()));
+  return results;
+}
+
+export function clearAiNarrativeCache(key?: string) {
   if (key) {
-    cacheEntries.delete(key);
+    memoryCache.delete(key);
     return;
   }
 
-  cacheEntries.clear();
+  memoryCache.clear();
 }

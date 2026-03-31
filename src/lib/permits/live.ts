@@ -1,7 +1,13 @@
 import 'server-only';
 
 import { format, isValid, parseISO, subDays } from 'date-fns';
-import { generateAndStoreAiInterpretation, getAiDebugState, getCachedAiInterpretation } from './ai';
+import {
+  generateAndStoreAiInterpretation,
+  generateAndStoreAiInterpretations,
+  getAiDebugState,
+  getStoredAiInterpretation,
+  getStoredAiInterpretations
+} from './ai';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject, SummaryStats } from './types';
 
 const FEATURE_URL =
@@ -516,26 +522,13 @@ function buildAiInput(project: PermitProject, trade: string) {
   };
 }
 
-function prefixAiSummary(summary: string): string {
-  return summary.startsWith('[AI]') ? summary : `[AI] ${summary}`;
-}
-
-async function enrichProjectNarrative(project: PermitProject, trade: string, options?: { bypassCache?: boolean }): Promise<PermitProject> {
-  const aiInput = buildAiInput(project, trade);
-  let cached = await getCachedAiInterpretation(aiInput);
-  let aiNarrative = cached.interpretation;
-
-  if (!aiNarrative) {
-    const generated = await generateAndStoreAiInterpretation(aiInput, options);
-    cached = await getCachedAiInterpretation(aiInput);
-    aiNarrative = generated.parsed || cached.interpretation;
-  }
-
+function applyNarrative(project: PermitProject, trade: string, aiNarrative?: { summary: string; whyItMatters: string; tradeReason: string; isTradeRelevant: boolean } | null): PermitProject {
   if (!aiNarrative) {
     const fallbackTrade = fallbackTradeDecision(project, trade);
     const fallbackProject: PermitProject = {
       ...project,
       readableSummary: project.readableSummary,
+      whyItMatters: project.whyItMatters,
       tradeSummary: fallbackTrade.tradeReason,
       isTradeRelevant: fallbackTrade.isTradeRelevant,
       summarySource: 'fallback',
@@ -543,13 +536,12 @@ async function enrichProjectNarrative(project: PermitProject, trade: string, opt
     };
     console.log('FINAL SUMMARY SOURCE: fallback');
     console.log('FINAL TRADE SOURCE: fallback');
-    console.log('AI CACHE STATUS:', cached.cacheStatus);
     console.log('FINAL SUMMARY:', fallbackProject.readableSummary);
     console.log('FINAL TRADE DECISION:', fallbackProject.isTradeRelevant ? 'relevant' : 'not relevant');
     return fallbackProject;
   }
 
-  const summary = prefixAiSummary(aiNarrative.summary.trim() || project.readableSummary);
+  const summary = aiNarrative.summary.trim() || project.readableSummary;
   const whyItMatters = aiNarrative.whyItMatters && !textsOverlap(aiNarrative.whyItMatters, summary) ? aiNarrative.whyItMatters : '';
   const tradeSummary =
     aiNarrative.tradeReason &&
@@ -569,14 +561,25 @@ async function enrichProjectNarrative(project: PermitProject, trade: string, opt
   };
   console.log('FINAL SUMMARY SOURCE: ai');
   console.log('FINAL TRADE SOURCE:', trade ? 'ai' : 'fallback');
-  console.log('AI CACHE STATUS:', cached.cacheStatus);
   console.log('FINAL SUMMARY:', enrichedProject.readableSummary);
   console.log('FINAL TRADE DECISION:', enrichedProject.isTradeRelevant ? 'relevant' : 'not relevant');
   return enrichedProject;
 }
 
+async function enrichProjectNarrative(project: PermitProject, trade: string): Promise<PermitProject> {
+  const cached = await getStoredAiInterpretation(buildAiInput(project, trade));
+  console.log('AI CACHE STATUS:', cached.cacheStatus);
+  return applyNarrative(project, trade, cached.interpretation?.interpretation || null);
+}
+
 async function enrichProjects(projects: PermitProject[], trade = ''): Promise<PermitProject[]> {
-  return Promise.all(projects.map((project) => enrichProjectNarrative(project, trade)));
+  if (!projects.length) return [];
+
+  const lookups = await getStoredAiInterpretations(projects.map((project) => buildAiInput(project, trade)));
+  return projects.map((project) => {
+    const lookup = lookups.get(project.id);
+    return applyNarrative(project, trade, lookup?.interpretation?.interpretation || null);
+  });
 }
 
 async function loadProjects(): Promise<CacheValue> {
@@ -723,11 +726,17 @@ function buildActiveContacts(projects: PermitProject[]): ActiveContact[] {
   return [...buckets.values()].sort((left, right) => right.projectCount - left.projectCount || right.totalValuation - left.totalValuation);
 }
 
-function buildDebugPayload(summarySource: DashboardPayload['debug']['lastSummarySource'], tradeSource: DashboardPayload['debug']['lastTradeSource']) {
+function buildDebugPayload(
+  summarySource: DashboardPayload['debug']['lastSummarySource'],
+  tradeSource: DashboardPayload['debug']['lastTradeSource'],
+  options?: { storedAiCount?: number; lastGenerateActionResult?: string }
+) {
   const aiDebug = getAiDebugState();
   return {
     ...aiDebug,
     lastCacheStatus: aiDebug.lastCacheStatus,
+    storedAiCount: options?.storedAiCount ?? 0,
+    lastGenerateActionResult: options?.lastGenerateActionResult || '',
     lastSummarySource: summarySource,
     lastTradeSource: tradeSource
   };
@@ -740,6 +749,7 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
   const visibleProjects = filteredProjects.slice(0, 120);
   const enrichedProjects = await enrichProjects(visibleProjects, trade);
   const lastProject = enrichedProjects[0];
+  const storedAiCount = enrichedProjects.filter((project) => project.summarySource === 'ai').length;
 
   return {
     filters,
@@ -750,7 +760,7 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
     availablePermitTypes: Array.from(new Set(projects.map((project) => project.permitSubtype || project.permitType).filter(Boolean))).sort(),
     availableNeighborhoods: Array.from(new Set(projects.map((project) => project.neighborhood).filter(Boolean))).sort(),
     asOf: new Date(fetchedAt).toISOString(),
-    debug: buildDebugPayload(lastProject?.summarySource || 'unknown', lastProject?.tradeSource || 'unknown')
+    debug: buildDebugPayload(lastProject?.summarySource || 'unknown', lastProject?.tradeSource || 'unknown', { storedAiCount })
   };
 }
 
@@ -770,6 +780,7 @@ export async function getProjectsByContact(name: string, filters?: Partial<Dashb
   const sorted = sortProjects(projects, nextFilters.sort);
   const enrichedProjects = await enrichProjects(sorted, trade);
   const lastProject = enrichedProjects[0];
+  const storedAiCount = enrichedProjects.filter((project) => project.summarySource === 'ai').length;
 
   return {
     filters: nextFilters,
@@ -781,7 +792,7 @@ export async function getProjectsByContact(name: string, filters?: Partial<Dashb
     availablePermitTypes: Array.from(new Set(allProjects.map((project) => project.permitSubtype || project.permitType).filter(Boolean))).sort(),
     availableNeighborhoods: Array.from(new Set(allProjects.map((project) => project.neighborhood).filter(Boolean))).sort(),
     asOf: new Date(fetchedAt).toISOString(),
-    debug: buildDebugPayload(lastProject?.summarySource || 'unknown', lastProject?.tradeSource || 'unknown')
+    debug: buildDebugPayload(lastProject?.summarySource || 'unknown', lastProject?.tradeSource || 'unknown', { storedAiCount })
   };
 }
 
@@ -796,11 +807,17 @@ export async function regenerateProjectInterpretation(id: string, trade = '', op
   }
 
   const result = await generateAndStoreAiInterpretation(buildAiInput(baseProject, trade), { bypassCache: options?.bypassCache ?? true });
-  const project = await enrichProjectNarrative(baseProject, trade, { bypassCache: false });
+  const project = await enrichProjectNarrative(baseProject, trade);
 
   return {
     project,
-    debug: { ...buildDebugPayload(project?.summarySource || 'unknown', project?.tradeSource || 'unknown'), lastCacheStatus: result.cacheStatus }
+    debug: {
+      ...buildDebugPayload(project?.summarySource || 'unknown', project?.tradeSource || 'unknown', {
+        storedAiCount: project?.summarySource === 'ai' ? 1 : 0,
+        lastGenerateActionResult: result.resultSource === 'ai' ? `Stored AI for project ${id}.` : `AI fell back for project ${id}.`
+      }),
+      lastCacheStatus: result.cacheStatus
+    }
   };
 }
 
@@ -827,7 +844,7 @@ export async function testProjectAiInterpretation(id: string, trade = '') {
     };
   }
 
-  const cached = await getCachedAiInterpretation(buildAiInput(project, trade));
+  const cached = await getStoredAiInterpretation(buildAiInput(project, trade));
   const aiResult = await generateAndStoreAiInterpretation(buildAiInput(project, trade), { bypassCache: true });
 
   return {
@@ -849,9 +866,38 @@ export async function testProjectAiInterpretation(id: string, trade = '') {
   };
 }
 
+export async function generateAiForProjects(ids: string[], trade = '', options?: { bypassCache?: boolean }) {
+  const { projects } = await loadProjects();
+  const uniqueIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+  const selected = uniqueIds
+    .map((id) => projects.find((project) => project.id === id) || null)
+    .filter((project): project is PermitProject => Boolean(project));
+
+  const results = await generateAndStoreAiInterpretations(selected.map((project) => buildAiInput(project, trade)), {
+    bypassCache: options?.bypassCache ?? false,
+    concurrency: 2
+  });
+
+  const refreshedProjects = await enrichProjects(selected, trade);
+  const storedAiCount = refreshedProjects.filter((project) => project.summarySource === 'ai').length;
+
+  return {
+    results,
+    projects: refreshedProjects,
+    debug: buildDebugPayload(
+      refreshedProjects[0]?.summarySource || 'unknown',
+      refreshedProjects[0]?.tradeSource || 'unknown',
+      {
+        storedAiCount,
+        lastGenerateActionResult: `Generated AI for ${results.filter((result) => result.summarySource === 'ai').length} of ${selected.length} jobs.`
+      }
+    )
+  };
+}
+
 export async function prewarmProjectInterpretations(ids: string[], trade = '') {
   return {
-    results: ids.map((id) => ({ id, cacheStatus: 'disabled' })),
-    debug: buildDebugPayload('unknown', 'unknown')
+    ...(await generateAiForProjects(ids, trade)),
+    alias: 'prewarm-ai'
   };
 }
