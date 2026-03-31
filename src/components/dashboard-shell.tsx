@@ -223,7 +223,6 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [isTestingAi, setIsTestingAi] = useState(false);
   const [aiTestResult, setAiTestResult] = useState<string>('');
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
-  const prewarmSignatureRef = useRef('');
 
   const deferredNeighborhood = useDeferredValue(filters.neighborhood);
   const deferredContractor = useDeferredValue(filters.contractorQuery);
@@ -314,10 +313,6 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   );
   const dashboardPreviewContacts = visibleContacts.slice(0, 3);
   const dashboardPreviewProjects = visibleProjects.slice(0, 3);
-  const prewarmIds = useMemo(
-    () => Array.from(new Set((activeTab === 'home' ? dashboardPreviewProjects : visibleProjects).slice(0, 24).map((project) => project.id))),
-    [activeTab, dashboardPreviewProjects, visibleProjects]
-  );
   const marketNote = buildMarketNote(profile.trade, baseProjects);
   const jobsSummary = useMemo(() => {
     if (!profile.trade) {
@@ -330,32 +325,6 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
 
     return `${visibleProjects.length} ${profile.trade.toLowerCase()} permits in ${labelForTimeframe(timeframeState.displayed)}.`;
   }, [profile.trade, timeframeState.displayed, visibleProjects.length]);
-
-  useEffect(() => {
-    if (!prewarmIds.length) return;
-
-    const signature = `${profile.trade}::${prewarmIds.join(',')}`;
-    if (prewarmSignatureRef.current === signature) return;
-    prewarmSignatureRef.current = signature;
-
-    const timeoutId = window.setTimeout(async () => {
-      try {
-        const response = await fetch('/api/permits/prewarm-ai', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: prewarmIds, trade: profile.trade })
-        });
-
-        if (!response.ok) return;
-        const result = (await response.json()) as { debug: DashboardPayload['debug'] };
-        startTransition(() => setPayload((current) => ({ ...current, debug: { ...current.debug, ...result.debug } })));
-      } catch (error) {
-        console.error(error);
-      }
-    }, 500);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [prewarmIds, profile.trade]);
 
   function updateProfile<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
     setProfile((current) => ({ ...current, [key]: value }));

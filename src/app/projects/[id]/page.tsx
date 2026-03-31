@@ -29,6 +29,7 @@ export default async function ProjectDetailPage({ params, searchParams }: { para
             <p className="mt-3 text-sm text-stone-300">
               Permit {project.permitNumber} • {project.permitSubtype || project.permitType}
             </p>
+            <p className="mt-1 text-xs font-medium uppercase tracking-[0.16em] text-stone-500">Project ID {project.id}</p>
             <p className="mt-4 max-w-2xl text-sm leading-6 text-stone-100">{project.readableSummary || 'No project summary listed on the permit.'}</p>
             <div className="mt-4 flex flex-wrap gap-3 text-sm font-semibold">
               {project.contactPhone ? (

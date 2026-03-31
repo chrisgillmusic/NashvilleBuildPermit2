@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { format, isValid, parseISO, subDays } from 'date-fns';
-import { generateAndStoreAiInterpretation, getAiDebugState, getCachedAiInterpretation, queueAiInterpretation } from './ai';
+import { generateAndStoreAiInterpretation, getAiDebugState, getCachedAiInterpretation } from './ai';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject, SummaryStats } from './types';
 
 const FEATURE_URL =
@@ -516,9 +516,20 @@ function buildAiInput(project: PermitProject, trade: string) {
   };
 }
 
-async function applyCachedInterpretation(project: PermitProject, trade: string): Promise<PermitProject> {
-  const cached = await getCachedAiInterpretation(buildAiInput(project, trade));
-  const aiNarrative = cached.interpretation;
+function prefixAiSummary(summary: string): string {
+  return summary.startsWith('[AI]') ? summary : `[AI] ${summary}`;
+}
+
+async function enrichProjectNarrative(project: PermitProject, trade: string, options?: { bypassCache?: boolean }): Promise<PermitProject> {
+  const aiInput = buildAiInput(project, trade);
+  let cached = await getCachedAiInterpretation(aiInput);
+  let aiNarrative = cached.interpretation;
+
+  if (!aiNarrative) {
+    const generated = await generateAndStoreAiInterpretation(aiInput, options);
+    cached = await getCachedAiInterpretation(aiInput);
+    aiNarrative = generated.parsed || cached.interpretation;
+  }
 
   if (!aiNarrative) {
     const fallbackTrade = fallbackTradeDecision(project, trade);
@@ -538,7 +549,7 @@ async function applyCachedInterpretation(project: PermitProject, trade: string):
     return fallbackProject;
   }
 
-  const summary = aiNarrative.summary.trim() || project.readableSummary;
+  const summary = prefixAiSummary(aiNarrative.summary.trim() || project.readableSummary);
   const whyItMatters = aiNarrative.whyItMatters && !textsOverlap(aiNarrative.whyItMatters, summary) ? aiNarrative.whyItMatters : '';
   const tradeSummary =
     aiNarrative.tradeReason &&
@@ -564,13 +575,8 @@ async function applyCachedInterpretation(project: PermitProject, trade: string):
   return enrichedProject;
 }
 
-async function applyCachedInterpretations(projects: PermitProject[], trade = ''): Promise<PermitProject[]> {
-  return Promise.all(projects.map((project) => applyCachedInterpretation(project, trade)));
-}
-
-async function queueInterpretations(projects: PermitProject[], trade = '') {
-  const limit = 24;
-  await Promise.all(projects.slice(0, limit).map((project) => queueAiInterpretation(buildAiInput(project, trade))));
+async function enrichProjects(projects: PermitProject[], trade = ''): Promise<PermitProject[]> {
+  return Promise.all(projects.map((project) => enrichProjectNarrative(project, trade)));
 }
 
 async function loadProjects(): Promise<CacheValue> {
@@ -732,8 +738,7 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
   const filters = sanitizeFilters(input);
   const filteredProjects = sortProjects(projects.filter((project) => matchesFilters(project, filters)), filters.sort);
   const visibleProjects = filteredProjects.slice(0, 120);
-  const enrichedProjects = await applyCachedInterpretations(visibleProjects, trade);
-  void queueInterpretations(visibleProjects, trade);
+  const enrichedProjects = await enrichProjects(visibleProjects, trade);
   const lastProject = enrichedProjects[0];
 
   return {
@@ -753,9 +758,7 @@ export async function getProjectById(id: string, trade = ''): Promise<PermitProj
   const { projects } = await loadProjects();
   const project = projects.find((project) => project.id === id) || null;
   if (!project) return null;
-  const cachedProject = await applyCachedInterpretation(project, trade);
-  void queueInterpretations([project], trade);
-  return cachedProject;
+  return enrichProjectNarrative(project, trade);
 }
 
 export async function getProjectsByContact(name: string, filters?: Partial<DashboardFilters>, trade = ''): Promise<DashboardPayload & { contactName: string }> {
@@ -765,8 +768,7 @@ export async function getProjectsByContact(name: string, filters?: Partial<Dashb
     (project) => project.contactName.toLowerCase() === name.toLowerCase() && matchesFilters(project, nextFilters)
   );
   const sorted = sortProjects(projects, nextFilters.sort);
-  const enrichedProjects = await applyCachedInterpretations(sorted, trade);
-  void queueInterpretations(sorted, trade);
+  const enrichedProjects = await enrichProjects(sorted, trade);
   const lastProject = enrichedProjects[0];
 
   return {
@@ -794,7 +796,7 @@ export async function regenerateProjectInterpretation(id: string, trade = '', op
   }
 
   const result = await generateAndStoreAiInterpretation(buildAiInput(baseProject, trade), { bypassCache: options?.bypassCache ?? true });
-  const project = await applyCachedInterpretation(baseProject, trade);
+  const project = await enrichProjectNarrative(baseProject, trade, { bypassCache: false });
 
   return {
     project,
@@ -848,17 +850,8 @@ export async function testProjectAiInterpretation(id: string, trade = '') {
 }
 
 export async function prewarmProjectInterpretations(ids: string[], trade = '') {
-  const { projects } = await loadProjects();
-  const requested = projects.filter((project) => ids.includes(project.id));
-  const results = await Promise.all(
-    requested.map(async (project) => {
-      const status = await queueAiInterpretation(buildAiInput(project, trade));
-      return { id: project.id, cacheStatus: status.cacheStatus };
-    })
-  );
-
   return {
-    results,
+    results: ids.map((id) => ({ id, cacheStatus: 'disabled' })),
     debug: buildDebugPayload('unknown', 'unknown')
   };
 }

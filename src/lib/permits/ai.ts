@@ -1,8 +1,6 @@
 import 'server-only';
 
 import { createHash } from 'crypto';
-import { mkdir, readFile, writeFile } from 'fs/promises';
-import path from 'path';
 import OpenAI from 'openai';
 
 type NarrativeInput = {
@@ -27,7 +25,7 @@ export type AiInterpretation = {
   isTradeRelevant: boolean;
 };
 
-type CacheStatus = 'hit' | 'miss' | 'generating' | 'refreshed' | 'unknown';
+type CacheStatus = 'hit' | 'miss' | 'refreshed' | 'unknown';
 
 type AiCacheEntry = {
   cacheKey: string;
@@ -35,7 +33,6 @@ type AiCacheEntry = {
   trade: string;
   sourceHash: string;
   storedAt: string;
-  updatedAt: string;
   interpretation: AiInterpretation;
 };
 
@@ -55,12 +52,8 @@ const AI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 6000);
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const OPENAI_API_URL = (process.env.OPENAI_API_URL || 'https://api.openai.com/v1').replace(/\/responses\/?$/, '');
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 3';
-const AI_CACHE_PATH = path.join(process.cwd(), '.cache', 'nbi-ai-cache.json');
 
-let cacheLoaded = false;
-let cacheLoadPromise: Promise<void> | null = null;
-let cacheEntries = new Map<string, AiCacheEntry>();
-let cachePersistPromise: Promise<void> = Promise.resolve();
+const cacheEntries = new Map<string, AiCacheEntry>();
 const generationInFlight = new Map<string, Promise<AiDebugResult>>();
 
 let lastAiDebug: AiDebugResult = {
@@ -108,42 +101,6 @@ function enabled(): boolean {
 function setLastAiDebug(result: AiDebugResult): AiDebugResult {
   lastAiDebug = result;
   return result;
-}
-
-async function ensureCacheLoaded(): Promise<void> {
-  if (cacheLoaded) return;
-  if (cacheLoadPromise) return cacheLoadPromise;
-
-  cacheLoadPromise = (async () => {
-    try {
-      const raw = await readFile(AI_CACHE_PATH, 'utf8');
-      const parsed = JSON.parse(raw) as AiCacheEntry[];
-      cacheEntries = new Map(parsed.map((entry) => [entry.cacheKey, entry]));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        console.error('AI CACHE LOAD FAILED', error);
-      }
-      cacheEntries = new Map();
-    } finally {
-      cacheLoaded = true;
-      cacheLoadPromise = null;
-    }
-  })();
-
-  return cacheLoadPromise;
-}
-
-function queueCachePersist(): Promise<void> {
-  cachePersistPromise = cachePersistPromise
-    .then(async () => {
-      await mkdir(path.dirname(AI_CACHE_PATH), { recursive: true });
-      await writeFile(AI_CACHE_PATH, JSON.stringify([...cacheEntries.values()], null, 2), 'utf8');
-    })
-    .catch((error) => {
-      console.error('AI CACHE WRITE FAILED', error);
-    });
-
-  return cachePersistPromise;
 }
 
 function pruneOldEntries(projectId: string, trade: string, nextKey: string) {
@@ -383,22 +340,6 @@ async function runOpenAiInterpretation(input: NarrativeInput): Promise<AiDebugRe
   }
 }
 
-async function storeAiInterpretation(input: NarrativeInput, interpretation: AiInterpretation): Promise<void> {
-  await ensureCacheLoaded();
-  const cacheKey = buildCacheKey(input);
-  pruneOldEntries(input.projectId, input.trade, cacheKey);
-  cacheEntries.set(cacheKey, {
-    cacheKey,
-    projectId: input.projectId,
-    trade: normalizeTrade(input.trade),
-    sourceHash: buildSourceHash(input),
-    storedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    interpretation
-  });
-  await queueCachePersist();
-}
-
 export function getAiDebugState() {
   return {
     aiEnabled: enabled(),
@@ -416,19 +357,30 @@ export function getLastAiDebugResult(): AiDebugResult {
 }
 
 export async function getCachedAiInterpretation(input: NarrativeInput): Promise<{ interpretation: AiInterpretation | null; cacheStatus: CacheStatus; cacheKey: string; sourceHash: string }> {
-  await ensureCacheLoaded();
   const cacheKey = buildCacheKey(input);
   const sourceHash = buildSourceHash(input);
   const entry = cacheEntries.get(cacheKey);
+
   if (!entry) {
-    return { interpretation: null, cacheStatus: generationInFlight.has(cacheKey) ? 'generating' : 'miss', cacheKey, sourceHash };
+    return { interpretation: null, cacheStatus: 'miss', cacheKey, sourceHash };
   }
+
+  setLastAiDebug({
+    attempted: false,
+    resultSource: 'ai',
+    failureReason: 'cache hit',
+    rawResponseText: '',
+    rawResponseShape: '',
+    parsed: entry.interpretation,
+    cacheStatus: 'hit',
+    cacheKey,
+    sourceHash
+  });
 
   return { interpretation: entry.interpretation, cacheStatus: 'hit', cacheKey, sourceHash };
 }
 
 export async function generateAndStoreAiInterpretation(input: NarrativeInput, options?: { bypassCache?: boolean }): Promise<AiDebugResult> {
-  await ensureCacheLoaded();
   const cacheKey = buildCacheKey(input);
   const sourceHash = buildSourceHash(input);
 
@@ -452,22 +404,20 @@ export async function generateAndStoreAiInterpretation(input: NarrativeInput, op
 
   const inflight = generationInFlight.get(cacheKey);
   if (inflight && !options?.bypassCache) {
-    return setLastAiDebug({
-      attempted: false,
-      resultSource: 'fallback',
-      failureReason: 'generating',
-      rawResponseText: '',
-      rawResponseShape: '',
-      parsed: null,
-      cacheStatus: 'generating',
-      cacheKey,
-      sourceHash
-    });
+    return inflight.then((result) => setLastAiDebug(result));
   }
 
-  const promise = runOpenAiInterpretation(input).then(async (result) => {
+  const promise: Promise<AiDebugResult> = runOpenAiInterpretation(input).then((result) => {
     if (result.parsed) {
-      await storeAiInterpretation(input, result.parsed);
+      pruneOldEntries(input.projectId, input.trade, cacheKey);
+      cacheEntries.set(cacheKey, {
+        cacheKey,
+        projectId: input.projectId,
+        trade: normalizeTrade(input.trade),
+        sourceHash,
+        storedAt: new Date().toISOString(),
+        interpretation: result.parsed
+      });
     }
     return result;
   });
@@ -482,80 +432,11 @@ export async function generateAndStoreAiInterpretation(input: NarrativeInput, op
   }
 }
 
-export async function queueAiInterpretation(input: NarrativeInput): Promise<{ cacheStatus: CacheStatus; cacheKey: string; sourceHash: string }> {
-  await ensureCacheLoaded();
-  const cacheKey = buildCacheKey(input);
-  const sourceHash = buildSourceHash(input);
-
-  if (cacheEntries.has(cacheKey)) {
-    setLastAiDebug({
-      attempted: false,
-      resultSource: 'ai',
-      failureReason: 'cache hit',
-      rawResponseText: '',
-      rawResponseShape: '',
-      parsed: cacheEntries.get(cacheKey)?.interpretation || null,
-      cacheStatus: 'hit',
-      cacheKey,
-      sourceHash
-    });
-    return { cacheStatus: 'hit', cacheKey, sourceHash };
-  }
-
-  if (generationInFlight.has(cacheKey)) {
-    setLastAiDebug({
-      attempted: false,
-      resultSource: 'fallback',
-      failureReason: 'generating',
-      rawResponseText: '',
-      rawResponseShape: '',
-      parsed: null,
-      cacheStatus: 'generating',
-      cacheKey,
-      sourceHash
-    });
-    return { cacheStatus: 'generating', cacheKey, sourceHash };
-  }
-
-  const promise = runOpenAiInterpretation(input)
-    .then(async (result) => {
-      if (result.parsed) {
-        await storeAiInterpretation(input, result.parsed);
-        setLastAiDebug(result);
-      } else {
-        setLastAiDebug(result);
-      }
-      return result;
-    })
-    .finally(() => {
-      generationInFlight.delete(cacheKey);
-    });
-
-  generationInFlight.set(cacheKey, promise);
-  setLastAiDebug({
-    attempted: false,
-    resultSource: 'fallback',
-    failureReason: 'queued for background generation',
-    rawResponseText: '',
-    rawResponseShape: '',
-    parsed: null,
-    cacheStatus: 'generating',
-    cacheKey,
-    sourceHash
-  });
-  void promise;
-
-  return { cacheStatus: 'generating', cacheKey, sourceHash };
-}
-
 export async function clearAiNarrativeCache(key?: string) {
-  await ensureCacheLoaded();
-
   if (key) {
     cacheEntries.delete(key);
-  } else {
-    cacheEntries.clear();
+    return;
   }
 
-  await queueCachePersist();
+  cacheEntries.clear();
 }

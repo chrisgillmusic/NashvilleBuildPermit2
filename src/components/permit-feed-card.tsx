@@ -38,6 +38,7 @@ export function PermitFeedCard({ project, contactHref, trade, expanded, onToggle
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2 text-xs font-medium text-stone-300">
+          <span className="rounded-full bg-white/10 px-3 py-1">ID {project.id}</span>
           <span className="rounded-full bg-white/10 px-3 py-1">{project.issueDateLabel}</span>
           <span className="rounded-full bg-white/10 px-3 py-1">{project.contactName}</span>
         </div>
