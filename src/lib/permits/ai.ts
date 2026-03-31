@@ -96,6 +96,23 @@ export type TradeNoteDebugResult = {
   stored: boolean;
 };
 
+export type TruthStageResult = {
+  stage:
+    | 'fetch_permit'
+    | 'build_prompt'
+    | 'openai_request'
+    | 'openai_response'
+    | 'parse_response'
+    | 'save_db'
+    | 'read_back_db'
+    | 'ui_source_check'
+    | 'complete';
+  success: boolean;
+  durationMs: number;
+  error?: string;
+  preview?: string;
+};
+
 type StoredBaseSummaryShape = Omit<StoredBaseSummary, 'cacheKey'>;
 type StoredTradeNoteShape = Omit<StoredTradeNote, 'cacheKey'>;
 
@@ -268,6 +285,15 @@ function tradeStorageKey(cacheKey: string): string {
   return `${TRADE_NOTE_STORAGE_PREFIX}${cacheKey}`;
 }
 
+export function getBaseSummaryStorageInfo(input: BaseSummaryInput) {
+  const cacheKey = buildBaseCacheKey(input);
+  return {
+    cacheKey,
+    storageKey: summaryStorageKey(cacheKey),
+    sourceHash: buildBaseSourceHash(input)
+  };
+}
+
 function isStoredBaseSummaryShape(value: unknown): value is StoredBaseSummaryShape {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
@@ -308,6 +334,24 @@ function parseStoredTradeNote(cacheKey: string, value: unknown): StoredTradeNote
 
 function normalizeSummaryText(value: string): string {
   return value.replace(/\s+/g, ' ').trim().replace(/^[\-\u2022]\s*/, '').replace(/^summary:\s*/i, '');
+}
+
+function parseSimpleSummaryJson(text: string): { summary: string; failureReason: string } {
+  const json = maybeExtractJsonBlock(text);
+  let parsedValue: unknown;
+
+  try {
+    parsedValue = JSON.parse(json);
+  } catch (error) {
+    return { summary: '', failureReason: `invalid JSON: ${(error as Error).message}` };
+  }
+
+  const summary = normalizeSummaryText(normalizeText((parsedValue as Record<string, unknown>)?.summary));
+  if (!summary) {
+    return { summary: '', failureReason: 'missing summary field' };
+  }
+
+  return { summary, failureReason: 'success' };
 }
 
 function parseTradeNote(text: string): { tradeNote: string; isTradeRelevant: boolean | null; failureReason: string } {
@@ -405,6 +449,10 @@ async function storeTradeNote(record: StoredTradeNote): Promise<boolean> {
 
 export function getAiDebugState() {
   return { ...debugState };
+}
+
+export function buildBaseSummaryPromptForDebug(input: BaseSummaryInput) {
+  return buildBaseSummaryPrompt(input);
 }
 
 export async function getStoredBaseSummary(input: BaseSummaryInput): Promise<SummaryLookup> {
@@ -672,6 +720,138 @@ export async function generateAndStoreBaseSummary(
 
   inFlight.set(cacheKey, promise);
   return promise;
+}
+
+export async function requestBaseSummaryTruth(input: BaseSummaryInput): Promise<BaseSummaryDebugResult> {
+  if (!client) {
+    console.log('AI SKIPPED: missing key');
+    return {
+      attempted: false,
+      resultSource: 'fallback',
+      failureReason: 'missing key',
+      rawResponseText: '',
+      rawResponseShape: '',
+      cacheStatus: 'miss',
+      parsedSummary: '',
+      stored: false
+    };
+  }
+
+  console.log('AI CALLED');
+  console.log('AI REQUEST START');
+
+  try {
+    const response = await client.responses.create(
+      {
+        model: OPENAI_MODEL,
+        input: buildBaseSummaryPrompt(input)
+      },
+      {
+        signal: AbortSignal.timeout(AI_TIMEOUT_MS)
+      }
+    );
+
+    console.log('AI REQUEST SUCCESS');
+    const { text, shape } = extractResponseText(response);
+    if (!text) {
+      console.log('AI EMPTY OUTPUT');
+      return {
+        attempted: true,
+        resultSource: 'fallback',
+        failureReason: 'empty output',
+        rawResponseText: '',
+        rawResponseShape: shape,
+        cacheStatus: 'miss',
+        parsedSummary: '',
+        stored: false
+      };
+    }
+
+    const parsed = parseSimpleSummaryJson(text);
+    if (!parsed.summary) {
+      console.log('AI PARSE FAILED:', parsed.failureReason);
+      return {
+        attempted: true,
+        resultSource: 'fallback',
+        failureReason: parsed.failureReason,
+        rawResponseText: text,
+        rawResponseShape: shape,
+        cacheStatus: 'miss',
+        parsedSummary: '',
+        stored: false
+      };
+    }
+
+    console.log('AI SUCCESS');
+    console.log('AI RESULT:', parsed.summary);
+    return {
+      attempted: true,
+      resultSource: 'ai',
+      failureReason: 'success',
+      rawResponseText: text,
+      rawResponseShape: shape,
+      cacheStatus: 'miss',
+      parsedSummary: parsed.summary,
+      stored: false
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.toLowerCase().includes('timeout') || message.toLowerCase().includes('aborted')) {
+      console.log('AI SKIPPED: timeout');
+      return {
+        attempted: true,
+        resultSource: 'fallback',
+        failureReason: 'timeout',
+        rawResponseText: '',
+        rawResponseShape: '',
+        cacheStatus: 'miss',
+        parsedSummary: '',
+        stored: false
+      };
+    }
+
+    console.log(`AI REQUEST FAILED: ${message}`);
+    return {
+      attempted: true,
+      resultSource: 'fallback',
+      failureReason: `request failed: ${message}`,
+      rawResponseText: '',
+      rawResponseShape: '',
+      cacheStatus: 'miss',
+      parsedSummary: '',
+      stored: false
+    };
+  }
+}
+
+export async function saveBaseSummaryTruth(input: BaseSummaryInput, summary: string) {
+  const info = getBaseSummaryStorageInfo(input);
+  const record: StoredBaseSummary = {
+    projectId: input.projectId,
+    sourceHash: info.sourceHash,
+    cacheKey: info.cacheKey,
+    source: 'ai',
+    generatedAt: new Date().toISOString(),
+    version: APP_VERSION,
+    summary: normalizeSummaryText(summary)
+  };
+  const stored = await storeBaseSummary(record);
+  let readBack: StoredBaseSummary | null = null;
+
+  try {
+    const row = await prisma.appSetting.findUnique({ where: { key: info.storageKey } });
+    readBack = parseStoredBaseSummary(info.cacheKey, row?.value);
+  } catch (error) {
+    console.error('AI BASE SUMMARY TRUTH READ FAILED:', (error as Error).message);
+  }
+
+  return {
+    stored,
+    cacheKey: info.cacheKey,
+    storageKey: info.storageKey,
+    sourceHash: info.sourceHash,
+    readBack
+  };
 }
 
 export async function generateAndStoreBaseSummaries(

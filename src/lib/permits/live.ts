@@ -2,6 +2,8 @@ import 'server-only';
 
 import { format, isValid, parseISO, subDays } from 'date-fns';
 import {
+  buildBaseSummaryPromptForDebug,
+  clearAiNarrativeCache,
   generateAndStoreBaseSummaries,
   generateAndStoreBaseSummary,
   generateAndStoreTradeNote,
@@ -9,7 +11,10 @@ import {
   getStoredBaseSummary,
   getAiDebugState,
   getStoredTradeNote,
-  getStoredTradeNotes
+  getStoredTradeNotes,
+  requestBaseSummaryTruth,
+  saveBaseSummaryTruth,
+  type TruthStageResult
 } from './ai';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject, SummaryStats } from './types';
 
@@ -728,6 +733,12 @@ function buildActiveContacts(projects: PermitProject[]): ActiveContact[] {
   return [...buckets.values()].sort((left, right) => right.projectCount - left.projectCount || right.totalValuation - left.totalValuation);
 }
 
+function safePreview(value: string, max = 320): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max).trimEnd()}...`;
+}
+
 function buildDebugPayload(
   summarySource: DashboardPayload['debug']['lastSummarySource'],
   tradeSource: DashboardPayload['debug']['lastTradeSource'],
@@ -947,6 +958,245 @@ export async function generateTradeNoteForProject(id: string, trade = '', option
       }),
       lastCacheStatus: result.cacheStatus
     }
+  };
+}
+
+export async function runTruthModeTestForProject(id: string, trade = '') {
+  const stages: TruthStageResult[] = [];
+  const startedAt = Date.now();
+  const { projects } = await loadProjects();
+
+  const fetchStarted = Date.now();
+  const project = projects.find((candidate) => candidate.id === id) || null;
+  stages.push({
+    stage: 'fetch_permit',
+    success: Boolean(project),
+    durationMs: Date.now() - fetchStarted,
+    error: project ? undefined : 'project not found',
+    preview: project ? safePreview(`${project.address} | ${project.permitSubtype || project.permitType}`) : undefined
+  });
+
+  if (!project) {
+    return {
+      projectId: id,
+      selectedTrade: trade || '',
+      stageResults: stages,
+      finalResultSource: 'fallback' as const,
+      finalVisibleSummary: '',
+      rawResponsePreview: '',
+      parsedSummary: '',
+      parsedTradeNote: '',
+      dbSaveResult: { success: false, reason: 'project not found' },
+      dbReadBackResult: { success: false, reason: 'project not found' },
+      uiVisibleFieldUpdated: false,
+      failingStage: 'fetch_permit'
+    };
+  }
+
+  const input = buildBaseSummaryInput(project);
+
+  const promptStarted = Date.now();
+  const prompt = buildBaseSummaryPromptForDebug(input);
+  stages.push({
+    stage: 'build_prompt',
+    success: Boolean(prompt),
+    durationMs: Date.now() - promptStarted,
+    preview: safePreview(prompt, 220)
+  });
+
+  const requestStarted = Date.now();
+  const aiResult = await requestBaseSummaryTruth(input);
+  const requestDuration = Date.now() - requestStarted;
+
+  stages.push({
+    stage: 'openai_request',
+    success: aiResult.attempted && !aiResult.failureReason.startsWith('request failed') && aiResult.failureReason !== 'timeout' && aiResult.failureReason !== 'missing key',
+    durationMs: requestDuration,
+    error: aiResult.failureReason === 'success' || aiResult.failureReason === 'empty output' || aiResult.failureReason.startsWith('invalid JSON') || aiResult.failureReason === 'missing summary field'
+      ? undefined
+      : aiResult.failureReason
+  });
+  stages.push({
+    stage: 'openai_response',
+    success: Boolean(aiResult.rawResponseText),
+    durationMs: 0,
+    error: aiResult.rawResponseText ? undefined : aiResult.failureReason,
+    preview: aiResult.rawResponseText ? safePreview(aiResult.rawResponseText) : aiResult.rawResponseShape
+  });
+  stages.push({
+    stage: 'parse_response',
+    success: Boolean(aiResult.parsedSummary),
+    durationMs: 0,
+    error: aiResult.parsedSummary ? undefined : aiResult.failureReason,
+    preview: aiResult.parsedSummary ? aiResult.parsedSummary : undefined
+  });
+
+  let dbSaveResult = { success: false, reason: 'parse failed', cacheKey: '', storageKey: '' };
+  let dbReadBackResult = { success: false, reason: 'parse failed', summary: '' };
+  let uiVisibleFieldUpdated = false;
+  let finalVisibleSummary = '';
+  let finalResultSource: 'ai' | 'fallback' = 'fallback';
+
+  if (aiResult.parsedSummary) {
+    const saveStarted = Date.now();
+    const saved = await saveBaseSummaryTruth(input, aiResult.parsedSummary);
+    dbSaveResult = {
+      success: saved.stored,
+      reason: saved.stored ? 'saved' : 'save failed',
+      cacheKey: saved.cacheKey,
+      storageKey: saved.storageKey
+    };
+    stages.push({
+      stage: 'save_db',
+      success: saved.stored,
+      durationMs: Date.now() - saveStarted,
+      error: saved.stored ? undefined : 'database write failed',
+      preview: saved.storageKey
+    });
+
+    stages.push({
+      stage: 'read_back_db',
+      success: Boolean(saved.readBack?.summary),
+      durationMs: 0,
+      error: saved.readBack?.summary ? undefined : 'read-back failed',
+      preview: saved.readBack?.summary ? safePreview(saved.readBack.summary) : undefined
+    });
+
+    dbReadBackResult = {
+      success: Boolean(saved.readBack?.summary),
+      reason: saved.readBack?.summary ? 'read back' : 'read-back failed',
+      summary: saved.readBack?.summary || ''
+    };
+
+    clearAiNarrativeCache(saved.cacheKey);
+    const uiStarted = Date.now();
+    const enriched = await enrichProjectNarrative(project, trade);
+    finalVisibleSummary = enriched.readableSummary;
+    finalResultSource = enriched.summarySource;
+    uiVisibleFieldUpdated = enriched.summarySource === 'ai' && enriched.readableSummary === (saved.readBack?.summary || aiResult.parsedSummary);
+    stages.push({
+      stage: 'ui_source_check',
+      success: uiVisibleFieldUpdated,
+      durationMs: Date.now() - uiStarted,
+      error: uiVisibleFieldUpdated ? undefined : `ui visible summary came from ${enriched.summarySource}`,
+      preview: safePreview(enriched.readableSummary)
+    });
+  } else {
+    stages.push({ stage: 'save_db', success: false, durationMs: 0, error: 'skipped because parse failed' });
+    stages.push({ stage: 'read_back_db', success: false, durationMs: 0, error: 'skipped because parse failed' });
+    stages.push({ stage: 'ui_source_check', success: false, durationMs: 0, error: 'skipped because parse failed' });
+  }
+
+  stages.push({
+    stage: 'complete',
+    success: Boolean(aiResult.parsedSummary && dbSaveResult.success && dbReadBackResult.success && uiVisibleFieldUpdated),
+    durationMs: Date.now() - startedAt,
+    error: aiResult.parsedSummary && dbSaveResult.success && dbReadBackResult.success && uiVisibleFieldUpdated ? undefined : 'pipeline incomplete'
+  });
+
+  const failingStage = stages.find((stage) => !stage.success)?.stage || null;
+
+  return {
+    projectId: project.id,
+    selectedTrade: trade || '',
+    stageResults: stages,
+    finalResultSource,
+    finalVisibleSummary,
+    rawResponsePreview: safePreview(aiResult.rawResponseText || aiResult.rawResponseShape || ''),
+    parsedSummary: aiResult.parsedSummary,
+    parsedTradeNote: '',
+    dbSaveResult,
+    dbReadBackResult,
+    uiVisibleFieldUpdated,
+    failingStage,
+    uiSourceCheck: {
+      summaryField: 'project.readableSummary',
+      wouldDisplayAi: finalResultSource === 'ai'
+    }
+  };
+}
+
+export async function runTruthModeDbWriteTestForProject(id: string, trade = '') {
+  const testSummary = `TEST SUMMARY: AI write path is working for permit ${id}.`;
+  const stages: TruthStageResult[] = [];
+  const { projects } = await loadProjects();
+  const fetchStarted = Date.now();
+  const project = projects.find((candidate) => candidate.id === id) || null;
+
+  stages.push({
+    stage: 'fetch_permit',
+    success: Boolean(project),
+    durationMs: Date.now() - fetchStarted,
+    error: project ? undefined : 'project not found'
+  });
+
+  if (!project) {
+    return {
+      projectId: id,
+      selectedTrade: trade || '',
+      testSummary,
+      stageResults: stages,
+      dbSaveResult: { success: false, reason: 'project not found' },
+      dbReadBackResult: { success: false, reason: 'project not found' },
+      uiVisibleFieldUpdated: false,
+      visibleSummary: '',
+      failingStage: 'fetch_permit'
+    };
+  }
+
+  const input = buildBaseSummaryInput(project);
+  const saveStarted = Date.now();
+  const saved = await saveBaseSummaryTruth(input, testSummary);
+  stages.push({
+    stage: 'save_db',
+    success: saved.stored,
+    durationMs: Date.now() - saveStarted,
+    error: saved.stored ? undefined : 'database write failed',
+    preview: saved.storageKey
+  });
+  stages.push({
+    stage: 'read_back_db',
+    success: Boolean(saved.readBack?.summary),
+    durationMs: 0,
+    error: saved.readBack?.summary ? undefined : 'read-back failed',
+    preview: saved.readBack?.summary ? safePreview(saved.readBack.summary) : undefined
+  });
+
+  clearAiNarrativeCache(saved.cacheKey);
+  const uiStarted = Date.now();
+  const enriched = await enrichProjectNarrative(project, trade);
+  const uiVisibleFieldUpdated = enriched.summarySource === 'ai' && enriched.readableSummary === testSummary;
+  stages.push({
+    stage: 'ui_source_check',
+    success: uiVisibleFieldUpdated,
+    durationMs: Date.now() - uiStarted,
+    error: uiVisibleFieldUpdated ? undefined : `ui visible summary came from ${enriched.summarySource}`,
+    preview: safePreview(enriched.readableSummary)
+  });
+  stages.push({
+    stage: 'complete',
+    success: Boolean(saved.stored && saved.readBack?.summary && uiVisibleFieldUpdated),
+    durationMs: 0,
+    error: saved.stored && saved.readBack?.summary && uiVisibleFieldUpdated ? undefined : 'db write path incomplete'
+  });
+
+  return {
+    projectId: project.id,
+    selectedTrade: trade || '',
+    testSummary,
+    stageResults: stages,
+    dbSaveResult: {
+      success: saved.stored,
+      cacheKey: saved.cacheKey,
+      storageKey: saved.storageKey
+    },
+    dbReadBackResult: {
+      success: Boolean(saved.readBack?.summary),
+      summary: saved.readBack?.summary || ''
+    },
+    uiVisibleFieldUpdated,
+    visibleSummary: enriched.readableSummary,
+    failingStage: stages.find((stage) => !stage.success)?.stage || null
   };
 }
 

@@ -42,7 +42,7 @@ type TimeframeResolution = {
 
 const PROFILE_KEY = 'nbi-profile-v1';
 const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 6 • Summary Engine';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 7 • Truth Mode';
 
 const ONBOARDING_CARDS = [
   'Nashville Build Insider scans live permit data to surface real construction opportunities.',
@@ -216,14 +216,17 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingReady, setOnboardingReady] = useState(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
-  const [debugProjectId, setDebugProjectId] = useState('');
+  const [debugProjectId, setDebugProjectId] = useState('24468');
   const [debugBypassCache, setDebugBypassCache] = useState(true);
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [isGeneratingVisibleAi, setIsGeneratingVisibleAi] = useState(false);
   const [isGeneratingTradeNote, setIsGeneratingTradeNote] = useState(false);
   const [isTestingAi, setIsTestingAi] = useState(false);
+  const [isRunningDbWriteTest, setIsRunningDbWriteTest] = useState(false);
   const [aiTestResult, setAiTestResult] = useState<string>('');
+  const [dbWriteTestResult, setDbWriteTestResult] = useState<string>('');
+  const [lastFailingStage, setLastFailingStage] = useState<string | null>(null);
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
 
   const deferredNeighborhood = useDeferredValue(filters.neighborhood);
@@ -411,40 +414,33 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
 
     setIsTestingAi(true);
     setAiTestResult('');
+    setLastFailingStage(null);
 
     try {
-      const response = await fetch('/api/permits/test-ai', {
+      const response = await fetch('/api/permits/truth-mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, trade: profile.trade })
+        body: JSON.stringify({ id, trade: profile.trade, mode: 'pipeline' })
       });
 
-      if (!response.ok) throw new Error('Failed to test AI interpretation');
+      if (!response.ok) throw new Error('Failed to run truth mode test');
 
       const result = (await response.json()) as {
-        debug: DashboardPayload['debug'];
-        test: {
-          attempted: boolean;
-          resultSource: 'ai' | 'fallback';
-          failureReason: string;
-          rawResponseText: string;
-          rawResponseShape: string;
-          cacheStatus: string;
-          cachedBefore: string;
-          parsedSummary: string;
-          parsedTradeReason: string;
-          parsedIsTradeRelevant: boolean | null;
-        };
+        projectId: string;
+        failingStage: string | null;
+        stageResults: Array<{ stage: string; success: boolean }>;
+        finalResultSource: 'ai' | 'fallback';
+        finalVisibleSummary: string;
       };
 
-      startTransition(() => setPayload((current) => ({ ...current, debug: result.debug })));
-      setAiTestResult(JSON.stringify(result.test, null, 2));
+      setLastFailingStage(result.failingStage);
+      setAiTestResult(JSON.stringify(result, null, 2));
+      await refreshPayload();
     } catch (error) {
       setAiTestResult(
         JSON.stringify(
           {
-            attempted: false,
-            resultSource: 'fallback',
+            success: false,
             failureReason: (error as Error).message
           },
           null,
@@ -453,6 +449,41 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       );
     } finally {
       setIsTestingAi(false);
+    }
+  }
+
+  async function handleDbWriteTruthTest() {
+    const id = debugProjectId.trim();
+    if (!id) return;
+
+    setIsRunningDbWriteTest(true);
+    setDbWriteTestResult('');
+
+    try {
+      const response = await fetch('/api/permits/truth-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, trade: profile.trade, mode: 'db_write_test' })
+      });
+
+      if (!response.ok) throw new Error('Failed to run DB write truth test');
+
+      const result = await response.json();
+      setDbWriteTestResult(JSON.stringify(result, null, 2));
+      await refreshPayload();
+    } catch (error) {
+      setDbWriteTestResult(
+        JSON.stringify(
+          {
+            success: false,
+            failureReason: (error as Error).message
+          },
+          null,
+          2
+        )
+      );
+    } finally {
+      setIsRunningDbWriteTest(false);
     }
   }
 
@@ -890,14 +921,23 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last generate action</div>
                       <div className="mt-1 font-semibold text-white">{payload.debug.lastGenerateActionResult || 'No generate action yet'}</div>
                     </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last failing stage</div>
+                      <div className="mt-1 font-semibold text-white">{lastFailingStage || 'No truth test yet'}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last DB write test</div>
+                      <div className="mt-1 font-semibold text-white">{dbWriteTestResult ? 'Completed' : 'Not run yet'}</div>
+                    </div>
                   </div>
 
                   <div className="mt-4">
-                    <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Debug one job</div>
+                    <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Truth mode for one job</div>
                     <label className="mt-3 flex items-center gap-2 text-sm text-stone-300">
                       <input type="checkbox" checked={debugBypassCache} onChange={(event) => setDebugBypassCache(event.target.checked)} className="rounded border-white/20 bg-white/5" />
                       Bypass cache on generation
                     </label>
+                    <div className="mt-2 text-xs text-stone-400">Target permit for this pass: 24468. Job cards and detail headers also show internal project IDs.</div>
                     <div className="mt-2 flex flex-wrap gap-3">
                       <input
                         value={debugProjectId}
@@ -914,7 +954,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                           isTestingAi || !debugProjectId.trim() ? 'bg-white/10 text-stone-500' : 'border border-white/20 text-stone-100'
                         )}
                       >
-                        {isTestingAi ? 'Testing AI…' : 'Test AI'}
+                        {isTestingAi ? 'Running truth test…' : 'Run Truth Mode Test'}
                       </button>
                       <button
                         onClick={handleRegenerate}
@@ -938,6 +978,16 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       >
                         {isGeneratingTradeNote ? 'Generating note…' : 'Generate trade note'}
                       </button>
+                      <button
+                        onClick={handleDbWriteTruthTest}
+                        disabled={isRunningDbWriteTest || !debugProjectId.trim()}
+                        className={clsx(
+                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
+                          isRunningDbWriteTest || !debugProjectId.trim() ? 'bg-white/10 text-stone-500' : 'border border-white/20 text-stone-100'
+                        )}
+                      >
+                        {isRunningDbWriteTest ? 'Testing DB write…' : 'Run DB Write Test'}
+                      </button>
                     </div>
                     <div className="mt-4 flex flex-wrap gap-3">
                       <button
@@ -955,6 +1005,11 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                     {aiTestResult ? (
                       <pre className="mt-3 overflow-x-auto rounded-2xl bg-black/30 p-4 text-xs leading-6 text-stone-200">
                         {aiTestResult}
+                      </pre>
+                    ) : null}
+                    {dbWriteTestResult ? (
+                      <pre className="mt-3 overflow-x-auto rounded-2xl bg-black/30 p-4 text-xs leading-6 text-stone-200">
+                        {dbWriteTestResult}
                       </pre>
                     ) : null}
                   </div>
