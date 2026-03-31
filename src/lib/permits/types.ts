@@ -74,6 +74,9 @@ export type DashboardPayload = {
     aiEnabled: boolean;
     apiKeyPresent: boolean;
     appVersion: string;
+    lastAiCallAttempted: boolean;
+    lastAiResultSource: InterpretationSource | 'unknown';
+    lastAiFailureReason: string;
     lastSummarySource: InterpretationSource | 'unknown';
     lastTradeSource: InterpretationSource | 'unknown';
   };

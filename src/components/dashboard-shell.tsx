@@ -219,6 +219,8 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [debugProjectId, setDebugProjectId] = useState('');
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const [isTestingAi, setIsTestingAi] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState<string>('');
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
 
   const deferredNeighborhood = useDeferredValue(filters.neighborhood);
@@ -383,6 +385,56 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       setRegenerateStatus((error as Error).message);
     } finally {
       setIsRegenerating(false);
+    }
+  }
+
+  async function handleTestAi() {
+    const id = debugProjectId.trim();
+    if (!id) return;
+
+    setIsTestingAi(true);
+    setAiTestResult('');
+
+    try {
+      const response = await fetch('/api/permits/test-ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, trade: profile.trade })
+      });
+
+      if (!response.ok) throw new Error('Failed to test AI interpretation');
+
+      const result = (await response.json()) as {
+        debug: DashboardPayload['debug'];
+        test: {
+          attempted: boolean;
+          resultSource: 'ai' | 'fallback';
+          failureReason: string;
+          rawResponseText: string;
+          rawResponseShape: string;
+          parsedSummary: string;
+          parsedWhyItMatters: string;
+          parsedTradeReason: string;
+          parsedIsTradeRelevant: boolean | null;
+        };
+      };
+
+      startTransition(() => setPayload((current) => ({ ...current, debug: result.debug })));
+      setAiTestResult(JSON.stringify(result.test, null, 2));
+    } catch (error) {
+      setAiTestResult(
+        JSON.stringify(
+          {
+            attempted: false,
+            resultSource: 'fallback',
+            failureReason: (error as Error).message
+          },
+          null,
+          2
+        )
+      );
+    } finally {
+      setIsTestingAi(false);
     }
   }
 
@@ -701,6 +753,18 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       <div className="mt-1 font-semibold text-white">{payload.debug.appVersion}</div>
                     </div>
                     <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last AI call attempted</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.lastAiCallAttempted ? 'Yes' : 'No'}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last AI result source</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.lastAiResultSource}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3 sm:col-span-2">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last AI skip / failure reason</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.lastAiFailureReason}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last summary source</div>
                       <div className="mt-1 font-semibold text-white">{payload.debug.lastSummarySource}</div>
                     </div>
@@ -711,7 +775,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                   </div>
 
                   <div className="mt-4">
-                    <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Regenerate one job</div>
+                    <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Debug one job</div>
                     <div className="mt-2 flex flex-wrap gap-3">
                       <input
                         value={debugProjectId}
@@ -720,6 +784,16 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                         placeholder="Project ID"
                         className="min-w-[180px] flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none"
                       />
+                      <button
+                        onClick={handleTestAi}
+                        disabled={isTestingAi || !debugProjectId.trim()}
+                        className={clsx(
+                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
+                          isTestingAi || !debugProjectId.trim() ? 'bg-white/10 text-stone-500' : 'border border-white/20 text-stone-100'
+                        )}
+                      >
+                        {isTestingAi ? 'Testing AI…' : 'Test AI'}
+                      </button>
                       <button
                         onClick={handleRegenerate}
                         disabled={isRegenerating || !debugProjectId.trim()}
@@ -732,6 +806,11 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       </button>
                     </div>
                     {regenerateStatus ? <div className="mt-3 text-sm text-stone-300">{regenerateStatus}</div> : null}
+                    {aiTestResult ? (
+                      <pre className="mt-3 overflow-x-auto rounded-2xl bg-black/30 p-4 text-xs leading-6 text-stone-200">
+                        {aiTestResult}
+                      </pre>
+                    ) : null}
                   </div>
                 </details>
               </div>

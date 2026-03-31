@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { format, isValid, parseISO, subDays } from 'date-fns';
-import { generateAiNarrative, getAiDebugState } from './ai';
+import { generateAiNarrativeDetailed, getAiDebugState } from './ai';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject, SummaryStats } from './types';
 
 const FEATURE_URL =
@@ -499,8 +499,8 @@ function fallbackTradeDecision(project: PermitProject, trade: string): { isTrade
   return { isTradeRelevant: matches, tradeReason: '' };
 }
 
-async function enrichProjectNarrative(project: PermitProject, trade: string, options?: { bypassCache?: boolean }): Promise<PermitProject> {
-  const aiNarrative = await generateAiNarrative({
+function buildAiInput(project: PermitProject, trade: string) {
+  return {
     permitNumber: project.permitNumber,
     address: project.address,
     permitType: project.permitType,
@@ -512,7 +512,12 @@ async function enrichProjectNarrative(project: PermitProject, trade: string, opt
     timeBucket: timeBucketLabel(project.issueDate),
     trade,
     likelyTrades: project.likelyTrades
-  }, options);
+  };
+}
+
+async function enrichProjectNarrative(project: PermitProject, trade: string, options?: { bypassCache?: boolean }): Promise<PermitProject> {
+  const aiResult = await generateAiNarrativeDetailed(buildAiInput(project, trade), options);
+  const aiNarrative = aiResult.parsed;
 
   if (!aiNarrative) {
     const fallbackTrade = fallbackTradeDecision(project, trade);
@@ -778,6 +783,46 @@ export async function regenerateProjectInterpretation(id: string, trade = '') {
       ...aiDebug,
       lastSummarySource: project?.summarySource || 'unknown',
       lastTradeSource: project?.tradeSource || 'unknown'
+    }
+  };
+}
+
+export async function testProjectAiInterpretation(id: string, trade = '') {
+  const { projects } = await loadProjects();
+  const project = projects.find((candidate) => candidate.id === id) || null;
+  if (!project) {
+    return {
+      project: null,
+      debug: getAiDebugState(),
+      test: {
+        attempted: false,
+        resultSource: 'fallback' as const,
+        failureReason: 'project not found',
+        rawResponseText: '',
+        rawResponseShape: '',
+        parsedSummary: '',
+        parsedWhyItMatters: '',
+        parsedTradeReason: '',
+        parsedIsTradeRelevant: null
+      }
+    };
+  }
+
+  const aiResult = await generateAiNarrativeDetailed(buildAiInput(project, trade), { bypassCache: true });
+
+  return {
+    project,
+    debug: getAiDebugState(),
+    test: {
+      attempted: aiResult.attempted,
+      resultSource: aiResult.resultSource,
+      failureReason: aiResult.failureReason,
+      rawResponseText: aiResult.rawResponseText,
+      rawResponseShape: aiResult.rawResponseShape,
+      parsedSummary: aiResult.parsed?.summary || '',
+      parsedWhyItMatters: aiResult.parsed?.whyItMatters || '',
+      parsedTradeReason: aiResult.parsed?.tradeReason || '',
+      parsedIsTradeRelevant: aiResult.parsed?.isTradeRelevant ?? null
     }
   };
 }
