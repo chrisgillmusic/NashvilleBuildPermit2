@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { runTruthModeDbWriteTestForProject, runTruthModeTestForProject } from '@/lib/permits/live';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
   const body = (await request.json()) as { id?: string; trade?: string; mode?: 'pipeline' | 'db_write_test' };

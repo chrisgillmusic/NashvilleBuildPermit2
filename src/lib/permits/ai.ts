@@ -90,6 +90,13 @@ export type BaseSummaryDebugResult = {
   clientInitialized: boolean;
 };
 
+export type DbWriteDebugResult = {
+  stored: boolean;
+  errorMessage: string;
+  errorName: string;
+  errorCode: string;
+};
+
 export type TradeNoteDebugResult = {
   attempted: boolean;
   resultSource: InterpretationSource;
@@ -242,15 +249,26 @@ function maybeExtractJsonBlock(text: string): string {
 function buildBaseSummaryPrompt(input: BaseSummaryInput): string {
   return [
     'Summarize this construction permit for a subcontractor in one short sentence.',
-    'Return valid JSON only: {"summary":"..."}',
     '',
-    `Project ID: ${input.projectId}`,
     `Permit type: ${input.permitType || 'Unknown'}`,
     `Permit subtype: ${input.permitSubtype || 'Unknown'}`,
-    `Valuation: ${input.valuation ? `$${Math.round(input.valuation).toLocaleString('en-US')}` : 'Unknown'}`,
     `Description: ${input.purpose || 'No description available'}`
   ].join('\n');
 }
+
+const SUMMARY_JSON_SCHEMA = {
+  type: 'json_schema' as const,
+  name: 'permit_summary',
+  strict: true,
+  schema: {
+    type: 'object',
+    properties: {
+      summary: { type: 'string' }
+    },
+    required: ['summary'],
+    additionalProperties: false
+  }
+};
 
 function buildTradeNotePrompt(input: TradeNoteInput): string {
   return [
@@ -399,7 +417,7 @@ function parseTradeNote(text: string): { tradeNote: string; isTradeRelevant: boo
   return { tradeNote, isTradeRelevant, failureReason: 'success' };
 }
 
-async function storeBaseSummary(record: StoredBaseSummary): Promise<boolean> {
+async function storeBaseSummary(record: StoredBaseSummary): Promise<DbWriteDebugResult> {
   summaryMemoryCache.set(record.cacheKey, record);
 
   try {
@@ -427,10 +445,26 @@ async function storeBaseSummary(record: StoredBaseSummary): Promise<boolean> {
         }
       }
     });
-    return true;
+    return {
+      stored: true,
+      errorMessage: '',
+      errorName: '',
+      errorCode: ''
+    };
   } catch (error) {
-    console.error('AI BASE SUMMARY STORAGE FAILED:', (error as Error).message);
-    return false;
+    const message = error instanceof Error ? error.message : String(error);
+    const name = error instanceof Error ? error.name : 'PrismaError';
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code: string }).code
+        : '';
+    console.error('AI BASE SUMMARY STORAGE FAILED:', message);
+    return {
+      stored: false,
+      errorMessage: message,
+      errorName: name,
+      errorCode: code
+    };
   }
 }
 
@@ -707,15 +741,13 @@ export async function generateAndStoreBaseSummary(
     });
 
     try {
-      const response = await client.responses.create(
-        {
-          model: OPENAI_MODEL,
-          input: payloadPreview
-        },
-        {
-          signal: AbortSignal.timeout(AI_TIMEOUT_MS)
+      const response = await client.responses.create({
+        model: OPENAI_MODEL,
+        input: payloadPreview,
+        text: {
+          format: SUMMARY_JSON_SCHEMA
         }
-      );
+      });
 
       console.log('OPENAI REQUEST SUCCESS');
       const { text, shape } = extractResponseText(response);
@@ -780,7 +812,7 @@ export async function generateAndStoreBaseSummary(
       setDebugState({
         lastAiResultSource: 'ai',
         lastAiFailureReason: 'success',
-        lastCacheStatus: stored ? options?.bypassCache ? 'refreshed' : 'stored' : 'stored-in-memory'
+        lastCacheStatus: stored.stored ? options?.bypassCache ? 'refreshed' : 'stored' : 'stored-error'
       });
       return {
         attempted: true,
@@ -788,9 +820,9 @@ export async function generateAndStoreBaseSummary(
         failureReason: 'success',
         rawResponseText: text,
         rawResponseShape: shape,
-        cacheStatus: stored ? options?.bypassCache ? 'refreshed' : 'stored' : 'stored-in-memory',
+        cacheStatus: stored.stored ? options?.bypassCache ? 'refreshed' : 'stored' : 'stored-error',
         parsedSummary: parsed.summary,
-        stored,
+        stored: stored.stored,
         requestDurationMs: Date.now() - requestStarted,
         openaiErrorMessage: '',
         openaiErrorName: '',
@@ -883,15 +915,13 @@ export async function requestBaseSummaryTruth(input: BaseSummaryInput): Promise<
   console.log(`OPENAI REQUEST PAYLOAD PREVIEW: ${payloadPreview.slice(0, 240)}`);
 
   try {
-    const response = await client.responses.create(
-      {
+      const response = await client.responses.create({
         model: OPENAI_MODEL,
-        input: payloadPreview
-      },
-      {
-        signal: AbortSignal.timeout(AI_TIMEOUT_MS)
-      }
-    );
+        input: payloadPreview,
+        text: {
+          format: SUMMARY_JSON_SCHEMA
+        }
+      });
 
     console.log('OPENAI REQUEST SUCCESS');
     const { text, shape } = extractResponseText(response);
@@ -1023,11 +1053,14 @@ export async function saveBaseSummaryTruth(input: BaseSummaryInput, summary: str
   }
 
   return {
-    stored,
+    stored: stored.stored,
     cacheKey: info.cacheKey,
     storageKey: info.storageKey,
     sourceHash: info.sourceHash,
-    readBack
+    readBack,
+    errorMessage: stored.errorMessage,
+    errorName: stored.errorName,
+    errorCode: stored.errorCode
   };
 }
 

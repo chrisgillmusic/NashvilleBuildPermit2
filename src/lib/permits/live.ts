@@ -995,7 +995,10 @@ export async function runTruthModeTestForProject(id: string, trade = '') {
       openaiStatusCode: null,
       requestDurationMs: 0,
       apiKeyDetected: getAiDebugState().apiKeyPresent,
-      clientInitialized: getAiDebugState().aiEnabled
+      clientInitialized: getAiDebugState().aiEnabled,
+      dbErrorMessage: '',
+      dbErrorName: '',
+      dbErrorCode: ''
     };
   }
 
@@ -1040,11 +1043,14 @@ export async function runTruthModeTestForProject(id: string, trade = '') {
     preview: aiResult.parsedSummary ? aiResult.parsedSummary : undefined
   });
 
-  let dbSaveResult = { success: false, reason: 'parse failed', cacheKey: '', storageKey: '' };
+  let dbSaveResult = { success: false, reason: 'parse failed', cacheKey: '', storageKey: '', dbErrorMessage: '', dbErrorName: '', dbErrorCode: '' };
   let dbReadBackResult = { success: false, reason: 'parse failed', summary: '' };
   let uiVisibleFieldUpdated = false;
   let finalVisibleSummary = '';
   let finalResultSource: 'ai' | 'fallback' = 'fallback';
+  let dbErrorMessage = '';
+  let dbErrorName = '';
+  let dbErrorCode = '';
 
   if (aiResult.parsedSummary) {
     const saveStarted = Date.now();
@@ -1052,14 +1058,20 @@ export async function runTruthModeTestForProject(id: string, trade = '') {
     dbSaveResult = {
       success: saved.stored,
       reason: saved.stored ? 'saved' : 'save failed',
+      dbErrorMessage: saved.errorMessage,
+      dbErrorName: saved.errorName,
+      dbErrorCode: saved.errorCode,
       cacheKey: saved.cacheKey,
       storageKey: saved.storageKey
     };
+    dbErrorMessage = saved.errorMessage;
+    dbErrorName = saved.errorName;
+    dbErrorCode = saved.errorCode;
     stages.push({
       stage: 'save_db',
       success: saved.stored,
       durationMs: Date.now() - saveStarted,
-      error: saved.stored ? undefined : 'database write failed',
+      error: saved.stored ? undefined : saved.errorMessage || 'database write failed',
       preview: saved.storageKey
     });
 
@@ -1124,6 +1136,9 @@ export async function runTruthModeTestForProject(id: string, trade = '') {
     requestDurationMs: aiResult.requestDurationMs,
     apiKeyDetected: aiResult.apiKeyDetected,
     clientInitialized: aiResult.clientInitialized,
+    dbErrorMessage,
+    dbErrorName,
+    dbErrorCode,
     uiSourceCheck: {
       summaryField: 'project.readableSummary',
       wouldDisplayAi: finalResultSource === 'ai'
@@ -1151,11 +1166,14 @@ export async function runTruthModeDbWriteTestForProject(id: string, trade = '') 
       selectedTrade: trade || '',
       testSummary,
       stageResults: stages,
-      dbSaveResult: { success: false, reason: 'project not found' },
+      dbSaveResult: { success: false, reason: 'project not found', dbErrorMessage: 'project not found', dbErrorName: 'ProjectNotFound', dbErrorCode: '', cacheKey: '', storageKey: '' },
       dbReadBackResult: { success: false, reason: 'project not found' },
       uiVisibleFieldUpdated: false,
       visibleSummary: '',
-      failingStage: 'fetch_permit'
+      failingStage: 'fetch_permit',
+      dbErrorMessage: 'project not found',
+      dbErrorName: 'ProjectNotFound',
+      dbErrorCode: ''
     };
   }
 
@@ -1166,7 +1184,7 @@ export async function runTruthModeDbWriteTestForProject(id: string, trade = '') 
     stage: 'save_db',
     success: saved.stored,
     durationMs: Date.now() - saveStarted,
-    error: saved.stored ? undefined : 'database write failed',
+    error: saved.stored ? undefined : saved.errorMessage || 'database write failed',
     preview: saved.storageKey
   });
   stages.push({
@@ -1202,6 +1220,9 @@ export async function runTruthModeDbWriteTestForProject(id: string, trade = '') 
     stageResults: stages,
     dbSaveResult: {
       success: saved.stored,
+      dbErrorMessage: saved.errorMessage,
+      dbErrorName: saved.errorName,
+      dbErrorCode: saved.errorCode,
       cacheKey: saved.cacheKey,
       storageKey: saved.storageKey
     },
@@ -1211,7 +1232,10 @@ export async function runTruthModeDbWriteTestForProject(id: string, trade = '') 
     },
     uiVisibleFieldUpdated,
     visibleSummary: enriched.readableSummary,
-    failingStage: stages.find((stage) => !stage.success)?.stage || null
+    failingStage: stages.find((stage) => !stage.success)?.stage || null,
+    dbErrorMessage: saved.errorMessage,
+    dbErrorName: saved.errorName,
+    dbErrorCode: saved.errorCode
   };
 }
 
