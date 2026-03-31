@@ -42,7 +42,7 @@ type TimeframeResolution = {
 
 const PROFILE_KEY = 'nbi-profile-v1';
 const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 5 • AI Pipeline';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 6 • Summary Engine';
 
 const ONBOARDING_CARDS = [
   'Nashville Build Insider scans live permit data to surface real construction opportunities.',
@@ -213,7 +213,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [jobsView, setJobsView] = useState<'feed' | 'map'>('feed');
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [profile, setProfile] = useState<UserProfile>(() => getInitialProfile(initialPayload));
-  const [showOnboarding, setShowOnboarding] = useState(true);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingReady, setOnboardingReady] = useState(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [debugProjectId, setDebugProjectId] = useState('');
@@ -221,6 +221,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [isGeneratingVisibleAi, setIsGeneratingVisibleAi] = useState(false);
+  const [isGeneratingTradeNote, setIsGeneratingTradeNote] = useState(false);
   const [isTestingAi, setIsTestingAi] = useState(false);
   const [aiTestResult, setAiTestResult] = useState<string>('');
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
@@ -264,9 +265,10 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       }));
     }
 
-    setShowOnboarding(true);
+    const onboardingComplete = window.localStorage.getItem(ONBOARDING_KEY) === 'true';
+    setShowOnboarding(!onboardingComplete);
     setOnboardingReady(true);
-  }, [initialPayload]);
+  }, []);
 
   useEffect(() => {
     if (!onboardingReady) return;
@@ -430,7 +432,6 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
           cacheStatus: string;
           cachedBefore: string;
           parsedSummary: string;
-          parsedWhyItMatters: string;
           parsedTradeReason: string;
           parsedIsTradeRelevant: boolean | null;
         };
@@ -455,6 +456,43 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
     }
   }
 
+  async function handleGenerateTradeNote() {
+    const id = debugProjectId.trim();
+    if (!id || !profile.trade) return;
+
+    setIsGeneratingTradeNote(true);
+    setRegenerateStatus(null);
+
+    try {
+      const response = await fetch('/api/permits/generate-trade-note', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, trade: profile.trade, bypassCache: debugBypassCache })
+      });
+
+      if (!response.ok) throw new Error('Failed to generate trade note');
+
+      const result = (await response.json()) as { project: PermitProject | null; debug: DashboardPayload['debug'] };
+      if (!result.project) {
+        setRegenerateStatus('Project not found.');
+        return;
+      }
+
+      await refreshPayload();
+      startTransition(() =>
+        setPayload((current) => ({
+          ...current,
+          debug: result.debug
+        }))
+      );
+      setRegenerateStatus(`Generated trade note for project ${result.project.id} using ${result.project.tradeSource}.`);
+    } catch (error) {
+      setRegenerateStatus((error as Error).message);
+    } finally {
+      setIsGeneratingTradeNote(false);
+    }
+  }
+
   async function handleGenerateVisibleAi() {
     if (!visibleProjects.length) {
       setRegenerateStatus('No visible jobs to generate.');
@@ -470,7 +508,6 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ids: visibleProjects.map((project) => project.id),
-          trade: profile.trade,
           bypassCache: debugBypassCache
         })
       });
@@ -490,7 +527,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
         })
       );
       setRegenerateStatus(
-        `Stored AI for ${result.results.filter((entry) => entry.summarySource === 'ai').length} of ${result.results.length} visible jobs.`
+        `Stored summaries for ${result.results.filter((entry) => entry.summarySource === 'ai').length} of ${result.results.length} visible jobs.`
       );
     } catch (error) {
       setRegenerateStatus((error as Error).message);
@@ -841,6 +878,14 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Stored AI in current view</div>
                       <div className="mt-1 font-semibold text-white">{payload.debug.storedAiCount}</div>
                     </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Needs summaries</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.needsSummaryCount}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Needs trade notes</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.needsTradeNoteCount}</div>
+                    </div>
                     <div className="rounded-2xl bg-white/5 px-4 py-3 sm:col-span-2">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last generate action</div>
                       <div className="mt-1 font-semibold text-white">{payload.debug.lastGenerateActionResult || 'No generate action yet'}</div>
@@ -851,7 +896,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                     <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Debug one job</div>
                     <label className="mt-3 flex items-center gap-2 text-sm text-stone-300">
                       <input type="checkbox" checked={debugBypassCache} onChange={(event) => setDebugBypassCache(event.target.checked)} className="rounded border-white/20 bg-white/5" />
-                      Bypass cache on Generate AI now
+                      Bypass cache on generation
                     </label>
                     <div className="mt-2 flex flex-wrap gap-3">
                       <input
@@ -879,7 +924,19 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                           isRegenerating || !debugProjectId.trim() ? 'bg-white/10 text-stone-500' : 'bg-amber-300 text-stone-900'
                         )}
                       >
-                        {isRegenerating ? 'Generating…' : 'Generate AI now'}
+                        {isRegenerating ? 'Generating…' : 'Generate summary for this permit'}
+                      </button>
+                      <button
+                        onClick={handleGenerateTradeNote}
+                        disabled={isGeneratingTradeNote || !debugProjectId.trim() || !profile.trade}
+                        className={clsx(
+                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
+                          isGeneratingTradeNote || !debugProjectId.trim() || !profile.trade
+                            ? 'bg-white/10 text-stone-500'
+                            : 'border border-white/20 text-stone-100'
+                        )}
+                      >
+                        {isGeneratingTradeNote ? 'Generating note…' : 'Generate trade note'}
                       </button>
                     </div>
                     <div className="mt-4 flex flex-wrap gap-3">
@@ -891,7 +948,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                           isGeneratingVisibleAi || !visibleProjects.length ? 'bg-white/10 text-stone-500' : 'bg-white text-stone-950'
                         )}
                       >
-                        {isGeneratingVisibleAi ? 'Generating Visible AI…' : 'Generate AI for Visible Jobs'}
+                        {isGeneratingVisibleAi ? 'Generating summaries…' : 'Generate summaries for visible jobs'}
                       </button>
                     </div>
                     {regenerateStatus ? <div className="mt-3 text-sm text-stone-300">{regenerateStatus}</div> : null}

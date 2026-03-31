@@ -5,69 +5,50 @@ import { createHash } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import type { InterpretationSource } from './types';
 
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 5 • AI Pipeline';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 6 • Summary Engine';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const AI_TIMEOUT_MS = 12_000;
-const STORAGE_PREFIX = 'ai_interpretation:v1:';
+const SUMMARY_STORAGE_PREFIX = 'summary_engine:v1:base:';
+const TRADE_NOTE_STORAGE_PREFIX = 'summary_engine:v1:trade:';
 
-export type NarrativeInput = {
+export type BaseSummaryInput = {
   projectId: string;
-  permitNumber: string;
-  address: string;
   permitType: string;
   permitSubtype: string;
   purpose: string;
   valuation: number;
-  neighborhood: string;
-  contactName: string;
-  timeBucket: string;
-  trade: string;
-  likelyTrades: string[];
+  location: string;
 };
 
-export type AiNarrative = {
+export type TradeNoteInput = {
+  projectId: string;
+  permitType: string;
+  permitSubtype: string;
+  purpose: string;
+  selectedTrade: string;
+  baseSummary: string;
+};
+
+export type StoredBaseSummary = {
+  projectId: string;
+  sourceHash: string;
+  cacheKey: string;
+  source: 'ai';
+  generatedAt: string;
+  version: string;
   summary: string;
-  whyItMatters: string;
-  tradeReason: string;
+};
+
+export type StoredTradeNote = {
+  projectId: string;
+  trade: string;
+  sourceHash: string;
+  cacheKey: string;
+  source: 'ai';
+  generatedAt: string;
+  version: string;
+  tradeNote: string;
   isTradeRelevant: boolean;
-};
-
-export type StoredAiInterpretation = {
-  projectId: string;
-  trade: string;
-  sourceHash: string;
-  cacheKey: string;
-  source: 'ai';
-  generatedAt: string;
-  version: string;
-  interpretation: AiNarrative;
-};
-
-export type StoredAiLookup = {
-  cacheKey: string;
-  cacheStatus: 'hit' | 'miss';
-  interpretation: StoredAiInterpretation | null;
-};
-
-export type AiDebugResult = {
-  attempted: boolean;
-  resultSource: InterpretationSource;
-  failureReason: string;
-  rawResponseText: string;
-  rawResponseShape: string;
-  cacheStatus: string;
-  parsed: AiNarrative | null;
-  stored: boolean;
-};
-
-type StoredValueShape = {
-  projectId: string;
-  trade: string;
-  sourceHash: string;
-  generatedAt: string;
-  version: string;
-  source: 'ai';
-  interpretation: AiNarrative;
 };
 
 type AiDebugState = {
@@ -80,9 +61,48 @@ type AiDebugState = {
   lastCacheStatus: string;
 };
 
+export type SummaryLookup = {
+  cacheKey: string;
+  cacheStatus: 'hit' | 'miss';
+  summary: StoredBaseSummary | null;
+};
+
+export type TradeNoteLookup = {
+  cacheKey: string;
+  cacheStatus: 'hit' | 'miss';
+  tradeNote: StoredTradeNote | null;
+};
+
+export type BaseSummaryDebugResult = {
+  attempted: boolean;
+  resultSource: InterpretationSource;
+  failureReason: string;
+  rawResponseText: string;
+  rawResponseShape: string;
+  cacheStatus: string;
+  parsedSummary: string;
+  stored: boolean;
+};
+
+export type TradeNoteDebugResult = {
+  attempted: boolean;
+  resultSource: InterpretationSource;
+  failureReason: string;
+  rawResponseText: string;
+  rawResponseShape: string;
+  cacheStatus: string;
+  parsedTradeNote: string;
+  parsedIsTradeRelevant: boolean | null;
+  stored: boolean;
+};
+
+type StoredBaseSummaryShape = Omit<StoredBaseSummary, 'cacheKey'>;
+type StoredTradeNoteShape = Omit<StoredTradeNote, 'cacheKey'>;
+
 const client = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
-const memoryCache = new Map<string, StoredAiInterpretation>();
-const inFlight = new Map<string, Promise<AiDebugResult>>();
+const summaryMemoryCache = new Map<string, StoredBaseSummary>();
+const tradeNoteMemoryCache = new Map<string, StoredTradeNote>();
+const inFlight = new Map<string, Promise<BaseSummaryDebugResult | TradeNoteDebugResult>>();
 
 let debugState: AiDebugState = {
   aiEnabled: Boolean(client),
@@ -96,6 +116,10 @@ let debugState: AiDebugState = {
 
 function setDebugState(update: Partial<AiDebugState>) {
   debugState = { ...debugState, ...update };
+}
+
+function normalizeText(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
 function normalizeTrade(value: string): string {
@@ -168,126 +192,98 @@ function maybeExtractJsonBlock(text: string): string {
   return text.trim();
 }
 
-function normalizeNarrativeText(value: unknown): string {
-  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
-}
-
-function textsOverlap(left: string, right: string): boolean {
-  const a = left.toLowerCase().replace(/[^\w]+/g, ' ').trim();
-  const b = right.toLowerCase().replace(/[^\w]+/g, ' ').trim();
-  if (!a || !b) return false;
-  return a === b || a.includes(b) || b.includes(a);
-}
-
-function parseAiNarrative(text: string): { parsed: AiNarrative | null; failureReason: string } {
-  const json = maybeExtractJsonBlock(text);
-  let parsedValue: unknown;
-
-  try {
-    parsedValue = JSON.parse(json);
-  } catch (error) {
-    return { parsed: null, failureReason: `invalid JSON: ${(error as Error).message}` };
-  }
-
-  const summary = normalizeNarrativeText((parsedValue as Record<string, unknown>)?.summary);
-  const whyItMatters = normalizeNarrativeText((parsedValue as Record<string, unknown>)?.whyItMatters);
-  const tradeReason = normalizeNarrativeText((parsedValue as Record<string, unknown>)?.tradeReason);
-  const isTradeRelevant = (parsedValue as Record<string, unknown>)?.isTradeRelevant;
-
-  if (!summary) {
-    return { parsed: null, failureReason: 'missing summary field' };
-  }
-
-  if (typeof isTradeRelevant !== 'boolean') {
-    return { parsed: null, failureReason: 'missing boolean isTradeRelevant field' };
-  }
-
-  return {
-    parsed: {
-      summary,
-      whyItMatters: whyItMatters && !textsOverlap(whyItMatters, summary) ? whyItMatters : '',
-      tradeReason:
-        tradeReason && !textsOverlap(tradeReason, summary) && !textsOverlap(tradeReason, whyItMatters) ? tradeReason : '',
-      isTradeRelevant
-    },
-    failureReason: 'success'
-  };
-}
-
-function buildPrompt(input: NarrativeInput): string {
+function buildBaseSummaryPrompt(input: BaseSummaryInput): string {
   return [
-    'You are helping commercial subcontractors quickly understand a Nashville building permit.',
-    'Return strict JSON only with these fields: summary, whyItMatters, tradeReason, isTradeRelevant.',
-    'Rules:',
-    '- summary: 1 sentence preferred, 2 short sentences max, plainspoken and specific.',
-    '- whyItMatters: optional. Use an empty string if it does not add new information.',
-    '- tradeReason: optional. Use an empty string if the selected trade is not a real fit or if the note would be vague.',
-    '- isTradeRelevant: boolean based on the actual scope, not optimism.',
-    '- Do not copy permit sludge or metadata directly unless necessary.',
-    '- Do not imply roofing or exterior work when the permit says no exterior work, no roofline change, or interior-only scope.',
-    '- If the selected trade is not actually implicated, set isTradeRelevant to false and leave tradeReason empty.',
+    'Summarize this commercial building permit for a subcontractor.',
+    'Write one short, useful sentence in plain English.',
+    'Be specific about what work is happening.',
+    'Do not copy permit sludge or metadata.',
+    'Do not use marketing or corporate language.',
     '',
-    `Selected trade: ${input.trade || 'None selected'}`,
-    `Address: ${input.address || 'Unknown'}`,
-    `Permit number: ${input.permitNumber || 'Unknown'}`,
+    `Project ID: ${input.projectId}`,
     `Permit type: ${input.permitType || 'Unknown'}`,
     `Permit subtype: ${input.permitSubtype || 'Unknown'}`,
-    `Neighborhood: ${input.neighborhood || 'Unknown'}`,
+    `Location: ${input.location || 'Unknown'}`,
     `Valuation: ${input.valuation ? `$${Math.round(input.valuation).toLocaleString('en-US')}` : 'Unknown'}`,
-    `Time bucket: ${input.timeBucket}`,
-    `Listed contact: ${input.contactName || 'Unknown'}`,
-    `Fallback trade hints: ${input.likelyTrades.join(', ') || 'None'}`,
-    `Permit description: ${input.purpose || 'No description available'}`,
-    '',
-    'Return JSON only.'
+    `Description: ${input.purpose || 'No description available'}`
   ].join('\n');
 }
 
-export function buildSourceHash(input: NarrativeInput): string {
+function buildTradeNotePrompt(input: TradeNoteInput): string {
+  return [
+    'Evaluate whether this permit is relevant to one selected subcontractor trade.',
+    'Return strict JSON only with keys: isTradeRelevant, tradeNote.',
+    'Rules:',
+    '- tradeNote must be one short sentence max.',
+    '- If the trade is not a real fit, set isTradeRelevant to false and tradeNote to an empty string.',
+    '- Be conservative.',
+    '- Do not imply exterior or roofing work if the permit says interior only, no exterior work, or no roofline change.',
+    '',
+    `Project ID: ${input.projectId}`,
+    `Selected trade: ${input.selectedTrade}`,
+    `Permit type: ${input.permitType || 'Unknown'}`,
+    `Permit subtype: ${input.permitSubtype || 'Unknown'}`,
+    `Base summary: ${input.baseSummary || 'Unknown'}`,
+    `Description: ${input.purpose || 'No description available'}`
+  ].join('\n');
+}
+
+export function buildBaseSourceHash(input: BaseSummaryInput): string {
   const serialized = JSON.stringify({
-    projectId: input.projectId,
-    permitNumber: input.permitNumber,
-    address: input.address,
     permitType: input.permitType,
     permitSubtype: input.permitSubtype,
     purpose: input.purpose,
     valuation: input.valuation,
-    neighborhood: input.neighborhood,
-    contactName: input.contactName,
-    timeBucket: input.timeBucket
+    location: input.location
   });
 
   return createHash('sha1').update(serialized).digest('hex');
 }
 
-export function buildCacheKey(input: NarrativeInput): string {
-  return `${input.projectId}:${tradeToken(input.trade)}:${buildSourceHash(input)}`;
+export function buildTradeSourceHash(input: TradeNoteInput): string {
+  const serialized = JSON.stringify({
+    permitType: input.permitType,
+    permitSubtype: input.permitSubtype,
+    purpose: input.purpose,
+    selectedTrade: normalizeTrade(input.selectedTrade),
+    baseSummary: input.baseSummary
+  });
+
+  return createHash('sha1').update(serialized).digest('hex');
 }
 
-function storageKey(cacheKey: string): string {
-  return `${STORAGE_PREFIX}${cacheKey}`;
+function buildBaseCacheKey(input: BaseSummaryInput): string {
+  return `${input.projectId}:${buildBaseSourceHash(input)}`;
 }
 
-function toStoredInterpretation(input: NarrativeInput, narrative: AiNarrative): StoredAiInterpretation {
-  const sourceHash = buildSourceHash(input);
-  const cacheKey = buildCacheKey(input);
-  return {
-    projectId: input.projectId,
-    trade: normalizeTrade(input.trade),
-    sourceHash,
-    cacheKey,
-    source: 'ai',
-    generatedAt: new Date().toISOString(),
-    version: APP_VERSION,
-    interpretation: narrative
-  };
+function buildTradeCacheKey(input: TradeNoteInput): string {
+  return `${input.projectId}:${tradeToken(input.selectedTrade)}:${buildTradeSourceHash(input)}`;
 }
 
-function isStoredValueShape(value: unknown): value is StoredValueShape {
+function summaryStorageKey(cacheKey: string): string {
+  return `${SUMMARY_STORAGE_PREFIX}${cacheKey}`;
+}
+
+function tradeStorageKey(cacheKey: string): string {
+  return `${TRADE_NOTE_STORAGE_PREFIX}${cacheKey}`;
+}
+
+function isStoredBaseSummaryShape(value: unknown): value is StoredBaseSummaryShape {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  const interpretation = record.interpretation as Record<string, unknown> | undefined;
+  return (
+    typeof record.projectId === 'string' &&
+    typeof record.sourceHash === 'string' &&
+    typeof record.generatedAt === 'string' &&
+    typeof record.version === 'string' &&
+    record.source === 'ai' &&
+    typeof record.summary === 'string'
+  );
+}
 
+function isStoredTradeNoteShape(value: unknown): value is StoredTradeNoteShape {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
   return (
     typeof record.projectId === 'string' &&
     typeof record.trade === 'string' &&
@@ -295,29 +291,85 @@ function isStoredValueShape(value: unknown): value is StoredValueShape {
     typeof record.generatedAt === 'string' &&
     typeof record.version === 'string' &&
     record.source === 'ai' &&
-    Boolean(interpretation) &&
-    typeof interpretation?.summary === 'string' &&
-    typeof interpretation?.whyItMatters === 'string' &&
-    typeof interpretation?.tradeReason === 'string' &&
-    typeof interpretation?.isTradeRelevant === 'boolean'
+    typeof record.tradeNote === 'string' &&
+    typeof record.isTradeRelevant === 'boolean'
   );
 }
 
-function parseStoredRecord(key: string, value: unknown): StoredAiInterpretation | null {
-  if (!isStoredValueShape(value)) return null;
-
-  return {
-    ...value,
-    cacheKey: key
-  };
+function parseStoredBaseSummary(cacheKey: string, value: unknown): StoredBaseSummary | null {
+  if (!isStoredBaseSummaryShape(value)) return null;
+  return { ...value, cacheKey };
 }
 
-async function storeInterpretation(record: StoredAiInterpretation): Promise<boolean> {
-  memoryCache.set(record.cacheKey, record);
+function parseStoredTradeNote(cacheKey: string, value: unknown): StoredTradeNote | null {
+  if (!isStoredTradeNoteShape(value)) return null;
+  return { ...value, cacheKey };
+}
+
+function normalizeSummaryText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().replace(/^[\-\u2022]\s*/, '').replace(/^summary:\s*/i, '');
+}
+
+function parseTradeNote(text: string): { tradeNote: string; isTradeRelevant: boolean | null; failureReason: string } {
+  const json = maybeExtractJsonBlock(text);
+  let parsedValue: unknown;
+
+  try {
+    parsedValue = JSON.parse(json);
+  } catch (error) {
+    return { tradeNote: '', isTradeRelevant: null, failureReason: `invalid JSON: ${(error as Error).message}` };
+  }
+
+  const tradeNote = normalizeText((parsedValue as Record<string, unknown>)?.tradeNote);
+  const isTradeRelevant = (parsedValue as Record<string, unknown>)?.isTradeRelevant;
+  if (typeof isTradeRelevant !== 'boolean') {
+    return { tradeNote: '', isTradeRelevant: null, failureReason: 'missing boolean isTradeRelevant field' };
+  }
+
+  return { tradeNote, isTradeRelevant, failureReason: 'success' };
+}
+
+async function storeBaseSummary(record: StoredBaseSummary): Promise<boolean> {
+  summaryMemoryCache.set(record.cacheKey, record);
 
   try {
     await prisma.appSetting.upsert({
-      where: { key: storageKey(record.cacheKey) },
+      where: { key: summaryStorageKey(record.cacheKey) },
+      update: {
+        value: {
+          projectId: record.projectId,
+          sourceHash: record.sourceHash,
+          generatedAt: record.generatedAt,
+          version: record.version,
+          source: record.source,
+          summary: record.summary
+        }
+      },
+      create: {
+        key: summaryStorageKey(record.cacheKey),
+        value: {
+          projectId: record.projectId,
+          sourceHash: record.sourceHash,
+          generatedAt: record.generatedAt,
+          version: record.version,
+          source: record.source,
+          summary: record.summary
+        }
+      }
+    });
+    return true;
+  } catch (error) {
+    console.error('AI BASE SUMMARY STORAGE FAILED:', (error as Error).message);
+    return false;
+  }
+}
+
+async function storeTradeNote(record: StoredTradeNote): Promise<boolean> {
+  tradeNoteMemoryCache.set(record.cacheKey, record);
+
+  try {
+    await prisma.appSetting.upsert({
+      where: { key: tradeStorageKey(record.cacheKey) },
       update: {
         value: {
           projectId: record.projectId,
@@ -326,11 +378,12 @@ async function storeInterpretation(record: StoredAiInterpretation): Promise<bool
           generatedAt: record.generatedAt,
           version: record.version,
           source: record.source,
-          interpretation: record.interpretation
+          tradeNote: record.tradeNote,
+          isTradeRelevant: record.isTradeRelevant
         }
       },
       create: {
-        key: storageKey(record.cacheKey),
+        key: tradeStorageKey(record.cacheKey),
         value: {
           projectId: record.projectId,
           trade: record.trade,
@@ -338,14 +391,14 @@ async function storeInterpretation(record: StoredAiInterpretation): Promise<bool
           generatedAt: record.generatedAt,
           version: record.version,
           source: record.source,
-          interpretation: record.interpretation
+          tradeNote: record.tradeNote,
+          isTradeRelevant: record.isTradeRelevant
         }
       }
     });
-
     return true;
   } catch (error) {
-    console.error('AI STORAGE FAILED:', (error as Error).message);
+    console.error('AI TRADE NOTE STORAGE FAILED:', (error as Error).message);
     return false;
   }
 }
@@ -354,55 +407,49 @@ export function getAiDebugState() {
   return { ...debugState };
 }
 
-export async function getStoredAiInterpretation(input: NarrativeInput): Promise<StoredAiLookup> {
-  const cacheKey = buildCacheKey(input);
-  const hot = memoryCache.get(cacheKey);
+export async function getStoredBaseSummary(input: BaseSummaryInput): Promise<SummaryLookup> {
+  const cacheKey = buildBaseCacheKey(input);
+  const hot = summaryMemoryCache.get(cacheKey);
 
   if (hot) {
     setDebugState({ lastCacheStatus: 'hit' });
-    return {
-      cacheKey,
-      cacheStatus: 'hit',
-      interpretation: hot
-    };
+    return { cacheKey, cacheStatus: 'hit', summary: hot };
   }
 
   try {
-    const row = await prisma.appSetting.findUnique({ where: { key: storageKey(cacheKey) } });
+    const row = await prisma.appSetting.findUnique({ where: { key: summaryStorageKey(cacheKey) } });
     if (!row) {
       setDebugState({ lastCacheStatus: 'miss' });
-      return { cacheKey, cacheStatus: 'miss', interpretation: null };
+      return { cacheKey, cacheStatus: 'miss', summary: null };
     }
 
-    const parsed = parseStoredRecord(cacheKey, row.value);
+    const parsed = parseStoredBaseSummary(cacheKey, row.value);
     if (!parsed) {
       setDebugState({ lastCacheStatus: 'miss' });
-      return { cacheKey, cacheStatus: 'miss', interpretation: null };
+      return { cacheKey, cacheStatus: 'miss', summary: null };
     }
 
-    memoryCache.set(cacheKey, parsed);
+    summaryMemoryCache.set(cacheKey, parsed);
     setDebugState({ lastCacheStatus: 'hit' });
-    return { cacheKey, cacheStatus: 'hit', interpretation: parsed };
+    return { cacheKey, cacheStatus: 'hit', summary: parsed };
   } catch (error) {
-    console.error('AI STORAGE READ FAILED:', (error as Error).message);
+    console.error('AI BASE SUMMARY READ FAILED:', (error as Error).message);
     setDebugState({ lastCacheStatus: 'miss' });
-    return { cacheKey, cacheStatus: 'miss', interpretation: null };
+    return { cacheKey, cacheStatus: 'miss', summary: null };
   }
 }
 
-export async function getStoredAiInterpretations(inputs: NarrativeInput[]): Promise<Map<string, StoredAiLookup>> {
-  const lookups = new Map<string, StoredAiLookup>();
-  const misses: Array<{ input: NarrativeInput; cacheKey: string }> = [];
+export async function getStoredBaseSummaries(inputs: BaseSummaryInput[]): Promise<Map<string, SummaryLookup>> {
+  const lookups = new Map<string, SummaryLookup>();
+  const misses: Array<{ input: BaseSummaryInput; cacheKey: string }> = [];
 
   for (const input of inputs) {
-    const cacheKey = buildCacheKey(input);
-    const hot = memoryCache.get(cacheKey);
-
+    const cacheKey = buildBaseCacheKey(input);
+    const hot = summaryMemoryCache.get(cacheKey);
     if (hot) {
-      lookups.set(input.projectId, { cacheKey, cacheStatus: 'hit', interpretation: hot });
+      lookups.set(input.projectId, { cacheKey, cacheStatus: 'hit', summary: hot });
       continue;
     }
-
     misses.push({ input, cacheKey });
   }
 
@@ -411,26 +458,25 @@ export async function getStoredAiInterpretations(inputs: NarrativeInput[]): Prom
       const rows = await prisma.appSetting.findMany({
         where: {
           key: {
-            in: misses.map((entry) => storageKey(entry.cacheKey))
+            in: misses.map((entry) => summaryStorageKey(entry.cacheKey))
           }
         }
       });
 
       const byKey = new Map(rows.map((row) => [row.key, row.value]));
-
       for (const miss of misses) {
-        const parsed = parseStoredRecord(miss.cacheKey, byKey.get(storageKey(miss.cacheKey)));
+        const parsed = parseStoredBaseSummary(miss.cacheKey, byKey.get(summaryStorageKey(miss.cacheKey)));
         if (parsed) {
-          memoryCache.set(miss.cacheKey, parsed);
-          lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'hit', interpretation: parsed });
+          summaryMemoryCache.set(miss.cacheKey, parsed);
+          lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'hit', summary: parsed });
         } else {
-          lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'miss', interpretation: null });
+          lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'miss', summary: null });
         }
       }
     } catch (error) {
-      console.error('AI STORAGE BATCH READ FAILED:', (error as Error).message);
+      console.error('AI BASE SUMMARY BATCH READ FAILED:', (error as Error).message);
       for (const miss of misses) {
-        lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'miss', interpretation: null });
+        lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'miss', summary: null });
       }
     }
   }
@@ -439,42 +485,101 @@ export async function getStoredAiInterpretations(inputs: NarrativeInput[]): Prom
   return lookups;
 }
 
-export async function generateAndStoreAiInterpretation(
-  input: NarrativeInput,
+export async function getStoredTradeNote(input: TradeNoteInput): Promise<TradeNoteLookup> {
+  const cacheKey = buildTradeCacheKey(input);
+  const hot = tradeNoteMemoryCache.get(cacheKey);
+
+  if (hot) {
+    setDebugState({ lastCacheStatus: 'hit' });
+    return { cacheKey, cacheStatus: 'hit', tradeNote: hot };
+  }
+
+  try {
+    const row = await prisma.appSetting.findUnique({ where: { key: tradeStorageKey(cacheKey) } });
+    if (!row) {
+      setDebugState({ lastCacheStatus: 'miss' });
+      return { cacheKey, cacheStatus: 'miss', tradeNote: null };
+    }
+
+    const parsed = parseStoredTradeNote(cacheKey, row.value);
+    if (!parsed) {
+      setDebugState({ lastCacheStatus: 'miss' });
+      return { cacheKey, cacheStatus: 'miss', tradeNote: null };
+    }
+
+    tradeNoteMemoryCache.set(cacheKey, parsed);
+    setDebugState({ lastCacheStatus: 'hit' });
+    return { cacheKey, cacheStatus: 'hit', tradeNote: parsed };
+  } catch (error) {
+    console.error('AI TRADE NOTE READ FAILED:', (error as Error).message);
+    setDebugState({ lastCacheStatus: 'miss' });
+    return { cacheKey, cacheStatus: 'miss', tradeNote: null };
+  }
+}
+
+export async function getStoredTradeNotes(inputs: TradeNoteInput[]): Promise<Map<string, TradeNoteLookup>> {
+  const lookups = new Map<string, TradeNoteLookup>();
+  const misses: Array<{ input: TradeNoteInput; cacheKey: string }> = [];
+
+  for (const input of inputs) {
+    const cacheKey = buildTradeCacheKey(input);
+    const hot = tradeNoteMemoryCache.get(cacheKey);
+    if (hot) {
+      lookups.set(input.projectId, { cacheKey, cacheStatus: 'hit', tradeNote: hot });
+      continue;
+    }
+    misses.push({ input, cacheKey });
+  }
+
+  if (misses.length) {
+    try {
+      const rows = await prisma.appSetting.findMany({
+        where: {
+          key: {
+            in: misses.map((entry) => tradeStorageKey(entry.cacheKey))
+          }
+        }
+      });
+
+      const byKey = new Map(rows.map((row) => [row.key, row.value]));
+      for (const miss of misses) {
+        const parsed = parseStoredTradeNote(miss.cacheKey, byKey.get(tradeStorageKey(miss.cacheKey)));
+        if (parsed) {
+          tradeNoteMemoryCache.set(miss.cacheKey, parsed);
+          lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'hit', tradeNote: parsed });
+        } else {
+          lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'miss', tradeNote: null });
+        }
+      }
+    } catch (error) {
+      console.error('AI TRADE NOTE BATCH READ FAILED:', (error as Error).message);
+      for (const miss of misses) {
+        lookups.set(miss.input.projectId, { cacheKey: miss.cacheKey, cacheStatus: 'miss', tradeNote: null });
+      }
+    }
+  }
+
+  setDebugState({ lastCacheStatus: lookups.size && [...lookups.values()].some((entry) => entry.cacheStatus === 'hit') ? 'hit' : 'miss' });
+  return lookups;
+}
+
+export async function generateAndStoreBaseSummary(
+  input: BaseSummaryInput,
   options?: { bypassCache?: boolean }
-): Promise<AiDebugResult> {
-  const cacheKey = buildCacheKey(input);
+): Promise<BaseSummaryDebugResult> {
+  const cacheKey = buildBaseCacheKey(input);
 
   if (!client) {
     console.log('AI SKIPPED: missing key');
-    setDebugState({
-      lastAiCallAttempted: false,
-      lastAiResultSource: 'fallback',
-      lastAiFailureReason: 'missing key',
-      lastCacheStatus: 'miss'
-    });
-    return {
-      attempted: false,
-      resultSource: 'fallback',
-      failureReason: 'missing key',
-      rawResponseText: '',
-      rawResponseShape: '',
-      cacheStatus: 'miss',
-      parsed: null,
-      stored: false
-    };
+    setDebugState({ lastAiCallAttempted: false, lastAiResultSource: 'fallback', lastAiFailureReason: 'missing key', lastCacheStatus: 'miss' });
+    return { attempted: false, resultSource: 'fallback', failureReason: 'missing key', rawResponseText: '', rawResponseShape: '', cacheStatus: 'miss', parsedSummary: '', stored: false };
   }
 
   if (!options?.bypassCache) {
-    const cached = await getStoredAiInterpretation(input);
-    if (cached.interpretation) {
+    const cached = await getStoredBaseSummary(input);
+    if (cached.summary) {
       console.log('AI CACHE HIT');
-      setDebugState({
-        lastAiCallAttempted: false,
-        lastAiResultSource: 'ai',
-        lastAiFailureReason: 'cache hit',
-        lastCacheStatus: 'hit'
-      });
+      setDebugState({ lastAiCallAttempted: false, lastAiResultSource: 'ai', lastAiFailureReason: 'cache hit', lastCacheStatus: 'hit' });
       return {
         attempted: false,
         resultSource: 'ai',
@@ -482,18 +587,16 @@ export async function generateAndStoreAiInterpretation(
         rawResponseText: '',
         rawResponseShape: '',
         cacheStatus: 'hit',
-        parsed: cached.interpretation.interpretation,
+        parsedSummary: cached.summary.summary,
         stored: true
       };
     }
   }
 
   const existing = inFlight.get(cacheKey);
-  if (existing) {
-    return existing;
-  }
+  if (existing) return existing as Promise<BaseSummaryDebugResult>;
 
-  const promise = (async (): Promise<AiDebugResult> => {
+  const promise = (async (): Promise<BaseSummaryDebugResult> => {
     console.log('AI CALLED');
     console.log('AI REQUEST START');
     setDebugState({
@@ -503,68 +606,44 @@ export async function generateAndStoreAiInterpretation(
       lastCacheStatus: options?.bypassCache ? 'refreshing' : 'miss'
     });
 
-    const timeoutSignal = AbortSignal.timeout(AI_TIMEOUT_MS);
-
     try {
-      const response = await client.responses.create({
-        model: OPENAI_MODEL,
-        input: buildPrompt(input)
-      }, {
-        signal: timeoutSignal
-      });
+      const response = await client.responses.create(
+        {
+          model: OPENAI_MODEL,
+          input: buildBaseSummaryPrompt(input)
+        },
+        {
+          signal: AbortSignal.timeout(AI_TIMEOUT_MS)
+        }
+      );
 
       console.log('AI REQUEST SUCCESS');
       const { text, shape } = extractResponseText(response);
+      const parsedSummary = normalizeSummaryText(text);
 
-      if (!text) {
+      if (!parsedSummary) {
         console.log('AI EMPTY OUTPUT');
-        setDebugState({
-          lastAiResultSource: 'fallback',
-          lastAiFailureReason: 'empty output',
-          lastCacheStatus: 'miss'
-        });
-        return {
-          attempted: true,
-          resultSource: 'fallback',
-          failureReason: 'empty output',
-          rawResponseText: '',
-          rawResponseShape: shape,
-          cacheStatus: 'miss',
-          parsed: null,
-          stored: false
-        };
+        setDebugState({ lastAiResultSource: 'fallback', lastAiFailureReason: 'empty output', lastCacheStatus: 'miss' });
+        return { attempted: true, resultSource: 'fallback', failureReason: 'empty output', rawResponseText: text, rawResponseShape: shape, cacheStatus: 'miss', parsedSummary: '', stored: false };
       }
 
-      const parsedResult = parseAiNarrative(text);
-      if (!parsedResult.parsed) {
-        console.log('AI PARSE FAILED:', parsedResult.failureReason);
-        setDebugState({
-          lastAiResultSource: 'fallback',
-          lastAiFailureReason: parsedResult.failureReason,
-          lastCacheStatus: 'miss'
-        });
-        return {
-          attempted: true,
-          resultSource: 'fallback',
-          failureReason: parsedResult.failureReason,
-          rawResponseText: text,
-          rawResponseShape: shape,
-          cacheStatus: 'miss',
-          parsed: null,
-          stored: false
-        };
-      }
-
+      const record: StoredBaseSummary = {
+        projectId: input.projectId,
+        sourceHash: buildBaseSourceHash(input),
+        cacheKey,
+        source: 'ai',
+        generatedAt: new Date().toISOString(),
+        version: APP_VERSION,
+        summary: parsedSummary
+      };
+      const stored = await storeBaseSummary(record);
       console.log('AI SUCCESS');
-      console.log('AI RESULT:', parsedResult.parsed);
-      const record = toStoredInterpretation(input, parsedResult.parsed);
-      const stored = await storeInterpretation(record);
+      console.log('AI RESULT:', parsedSummary);
       setDebugState({
         lastAiResultSource: 'ai',
         lastAiFailureReason: 'success',
         lastCacheStatus: stored ? options?.bypassCache ? 'refreshed' : 'stored' : 'stored-in-memory'
       });
-
       return {
         attempted: true,
         resultSource: 'ai',
@@ -572,46 +651,20 @@ export async function generateAndStoreAiInterpretation(
         rawResponseText: text,
         rawResponseShape: shape,
         cacheStatus: stored ? options?.bypassCache ? 'refreshed' : 'stored' : 'stored-in-memory',
-        parsed: parsedResult.parsed,
+        parsedSummary,
         stored
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.toLowerCase().includes('timeout') || message.toLowerCase().includes('aborted')) {
         console.log('AI SKIPPED: timeout');
-        setDebugState({
-          lastAiResultSource: 'fallback',
-          lastAiFailureReason: 'timeout',
-          lastCacheStatus: 'miss'
-        });
-        return {
-          attempted: true,
-          resultSource: 'fallback',
-          failureReason: 'timeout',
-          rawResponseText: '',
-          rawResponseShape: '',
-          cacheStatus: 'miss',
-          parsed: null,
-          stored: false
-        };
+        setDebugState({ lastAiResultSource: 'fallback', lastAiFailureReason: 'timeout', lastCacheStatus: 'miss' });
+        return { attempted: true, resultSource: 'fallback', failureReason: 'timeout', rawResponseText: '', rawResponseShape: '', cacheStatus: 'miss', parsedSummary: '', stored: false };
       }
 
       console.log(`AI REQUEST FAILED: ${message}`);
-      setDebugState({
-        lastAiResultSource: 'fallback',
-        lastAiFailureReason: `request failed: ${message}`,
-        lastCacheStatus: 'miss'
-      });
-      return {
-        attempted: true,
-        resultSource: 'fallback',
-        failureReason: `request failed: ${message}`,
-        rawResponseText: '',
-        rawResponseShape: '',
-        cacheStatus: 'miss',
-        parsed: null,
-        stored: false
-      };
+      setDebugState({ lastAiResultSource: 'fallback', lastAiFailureReason: `request failed: ${message}`, lastCacheStatus: 'miss' });
+      return { attempted: true, resultSource: 'fallback', failureReason: `request failed: ${message}`, rawResponseText: '', rawResponseShape: '', cacheStatus: 'miss', parsedSummary: '', stored: false };
     } finally {
       inFlight.delete(cacheKey);
     }
@@ -621,19 +674,12 @@ export async function generateAndStoreAiInterpretation(
   return promise;
 }
 
-export async function generateAndStoreAiInterpretations(
-  inputs: NarrativeInput[],
+export async function generateAndStoreBaseSummaries(
+  inputs: BaseSummaryInput[],
   options?: { bypassCache?: boolean; concurrency?: number }
 ) {
-  const concurrency = Math.max(1, Math.min(options?.concurrency ?? 2, 4));
-  const results: Array<{
-    id: string;
-    summarySource: InterpretationSource;
-    tradeSource: InterpretationSource;
-    cacheStatus: string;
-    failureReason: string;
-    stored: boolean;
-  }> = new Array(inputs.length);
+  const concurrency = Math.max(1, Math.min(options?.concurrency ?? 2, 5));
+  const results: Array<{ id: string; summarySource: InterpretationSource; cacheStatus: string; failureReason: string; stored: boolean }> = new Array(inputs.length);
   let cursor = 0;
 
   async function run(): Promise<void> {
@@ -641,11 +687,10 @@ export async function generateAndStoreAiInterpretations(
       const current = cursor;
       cursor += 1;
       const input = inputs[current];
-      const result = await generateAndStoreAiInterpretation(input, options);
+      const result = await generateAndStoreBaseSummary(input, options);
       results[current] = {
         id: input.projectId,
         summarySource: result.resultSource,
-        tradeSource: input.trade ? result.resultSource : 'fallback',
         cacheStatus: result.cacheStatus,
         failureReason: result.failureReason,
         stored: result.stored
@@ -657,11 +702,128 @@ export async function generateAndStoreAiInterpretations(
   return results;
 }
 
+export async function generateAndStoreTradeNote(
+  input: TradeNoteInput,
+  options?: { bypassCache?: boolean }
+): Promise<TradeNoteDebugResult> {
+  const cacheKey = buildTradeCacheKey(input);
+
+  if (!client) {
+    console.log('AI SKIPPED: missing key');
+    setDebugState({ lastAiCallAttempted: false, lastAiResultSource: 'fallback', lastAiFailureReason: 'missing key', lastCacheStatus: 'miss' });
+    return { attempted: false, resultSource: 'fallback', failureReason: 'missing key', rawResponseText: '', rawResponseShape: '', cacheStatus: 'miss', parsedTradeNote: '', parsedIsTradeRelevant: null, stored: false };
+  }
+
+  if (!options?.bypassCache) {
+    const cached = await getStoredTradeNote(input);
+    if (cached.tradeNote) {
+      console.log('AI CACHE HIT');
+      setDebugState({ lastAiCallAttempted: false, lastAiResultSource: 'ai', lastAiFailureReason: 'cache hit', lastCacheStatus: 'hit' });
+      return {
+        attempted: false,
+        resultSource: 'ai',
+        failureReason: 'cache hit',
+        rawResponseText: '',
+        rawResponseShape: '',
+        cacheStatus: 'hit',
+        parsedTradeNote: cached.tradeNote.tradeNote,
+        parsedIsTradeRelevant: cached.tradeNote.isTradeRelevant,
+        stored: true
+      };
+    }
+  }
+
+  const existing = inFlight.get(cacheKey);
+  if (existing) return existing as Promise<TradeNoteDebugResult>;
+
+  const promise = (async (): Promise<TradeNoteDebugResult> => {
+    console.log('AI CALLED');
+    console.log('AI REQUEST START');
+    setDebugState({
+      lastAiCallAttempted: true,
+      lastAiResultSource: 'fallback',
+      lastAiFailureReason: 'in progress',
+      lastCacheStatus: options?.bypassCache ? 'refreshing' : 'miss'
+    });
+
+    try {
+      const response = await client.responses.create(
+        {
+          model: OPENAI_MODEL,
+          input: buildTradeNotePrompt(input)
+        },
+        {
+          signal: AbortSignal.timeout(AI_TIMEOUT_MS)
+        }
+      );
+
+      console.log('AI REQUEST SUCCESS');
+      const { text, shape } = extractResponseText(response);
+      const parsed = parseTradeNote(text);
+
+      if (parsed.isTradeRelevant === null) {
+        console.log('AI PARSE FAILED:', parsed.failureReason);
+        setDebugState({ lastAiResultSource: 'fallback', lastAiFailureReason: parsed.failureReason, lastCacheStatus: 'miss' });
+        return { attempted: true, resultSource: 'fallback', failureReason: parsed.failureReason, rawResponseText: text, rawResponseShape: shape, cacheStatus: 'miss', parsedTradeNote: '', parsedIsTradeRelevant: null, stored: false };
+      }
+
+      const record: StoredTradeNote = {
+        projectId: input.projectId,
+        trade: normalizeTrade(input.selectedTrade),
+        sourceHash: buildTradeSourceHash(input),
+        cacheKey,
+        source: 'ai',
+        generatedAt: new Date().toISOString(),
+        version: APP_VERSION,
+        tradeNote: parsed.tradeNote,
+        isTradeRelevant: parsed.isTradeRelevant
+      };
+      const stored = await storeTradeNote(record);
+      console.log('AI SUCCESS');
+      console.log('AI RESULT:', record);
+      setDebugState({
+        lastAiResultSource: 'ai',
+        lastAiFailureReason: 'success',
+        lastCacheStatus: stored ? options?.bypassCache ? 'refreshed' : 'stored' : 'stored-in-memory'
+      });
+      return {
+        attempted: true,
+        resultSource: 'ai',
+        failureReason: 'success',
+        rawResponseText: text,
+        rawResponseShape: shape,
+        cacheStatus: stored ? options?.bypassCache ? 'refreshed' : 'stored' : 'stored-in-memory',
+        parsedTradeNote: record.tradeNote,
+        parsedIsTradeRelevant: record.isTradeRelevant,
+        stored
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.toLowerCase().includes('timeout') || message.toLowerCase().includes('aborted')) {
+        console.log('AI SKIPPED: timeout');
+        setDebugState({ lastAiResultSource: 'fallback', lastAiFailureReason: 'timeout', lastCacheStatus: 'miss' });
+        return { attempted: true, resultSource: 'fallback', failureReason: 'timeout', rawResponseText: '', rawResponseShape: '', cacheStatus: 'miss', parsedTradeNote: '', parsedIsTradeRelevant: null, stored: false };
+      }
+
+      console.log(`AI REQUEST FAILED: ${message}`);
+      setDebugState({ lastAiResultSource: 'fallback', lastAiFailureReason: `request failed: ${message}`, lastCacheStatus: 'miss' });
+      return { attempted: true, resultSource: 'fallback', failureReason: `request failed: ${message}`, rawResponseText: '', rawResponseShape: '', cacheStatus: 'miss', parsedTradeNote: '', parsedIsTradeRelevant: null, stored: false };
+    } finally {
+      inFlight.delete(cacheKey);
+    }
+  })();
+
+  inFlight.set(cacheKey, promise);
+  return promise;
+}
+
 export function clearAiNarrativeCache(key?: string) {
   if (key) {
-    memoryCache.delete(key);
+    summaryMemoryCache.delete(key);
+    tradeNoteMemoryCache.delete(key);
     return;
   }
 
-  memoryCache.clear();
+  summaryMemoryCache.clear();
+  tradeNoteMemoryCache.clear();
 }

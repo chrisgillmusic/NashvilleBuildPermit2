@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateAiForProjects } from '@/lib/permits/live';
+import { generateSummariesForProjects } from '@/lib/permits/live';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +11,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'At least one project id is required.' }, { status: 400 });
   }
 
-  const result = await generateAiForProjects(ids, body.trade || '', { bypassCache: body.bypassCache ?? false });
+  const result = await generateSummariesForProjects(ids, '', { bypassCache: body.bypassCache ?? false });
   return NextResponse.json(result);
 }
