@@ -51,7 +51,7 @@ export type AiDebugResult = {
 const AI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 6000);
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const OPENAI_API_URL = (process.env.OPENAI_API_URL || 'https://api.openai.com/v1').replace(/\/responses\/?$/, '');
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 3';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 4 • AI Verification';
 
 const cacheEntries = new Map<string, AiCacheEntry>();
 const generationInFlight = new Map<string, Promise<AiDebugResult>>();
