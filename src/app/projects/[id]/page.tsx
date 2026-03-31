@@ -13,6 +13,7 @@ export default async function ProjectDetailPage({ params, searchParams }: { para
   const project = await getProjectById(params.id, searchParams.trade || '');
   if (!project) notFound();
   const showWhyItMatters = project.whyItMatters.toLowerCase() !== project.readableSummary.toLowerCase();
+  const showLikelyTrades = project.likelyTrades.length > 0 && project.likelyTrades.length <= 4;
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-4xl px-4 pb-16 pt-6 text-stone-100 sm:px-6">
@@ -50,10 +51,14 @@ export default async function ProjectDetailPage({ params, searchParams }: { para
           <div className="rounded-2xl bg-amber-400/10 p-4 ring-1 ring-amber-300/20">
             {showWhyItMatters ? <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-200">Why it matters</div> : null}
             {showWhyItMatters ? <p className="mt-2 text-sm leading-6 text-stone-100">{project.whyItMatters}</p> : null}
-            <div className={showWhyItMatters ? 'mt-4 text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400' : 'text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400'}>
-              Likely trades involved
-            </div>
-            <p className="mt-2 text-sm leading-6 text-stone-200">{project.likelyTradesNote}</p>
+            {showLikelyTrades ? (
+              <>
+                <div className={showWhyItMatters ? 'mt-4 text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400' : 'text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400'}>
+                  Likely trades involved
+                </div>
+                <p className="mt-2 text-sm leading-6 text-stone-200">{project.likelyTrades.join(', ')}</p>
+              </>
+            ) : null}
           </div>
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
             <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400">Key fields</div>

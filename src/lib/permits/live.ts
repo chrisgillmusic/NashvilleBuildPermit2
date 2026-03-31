@@ -287,11 +287,37 @@ function buildReadableSummary(permitSubtype: string, cleanedPurpose: string): st
   return `${firstSentence.slice(0, 117).trimEnd()}...`;
 }
 
+function hasNegativeRoofSignalText(value: string): boolean {
+  const descriptor = value.toLowerCase();
+  return [
+    'no exterior',
+    'no change to exterior',
+    'no exterior work',
+    'no outside work',
+    'no roof',
+    'no roof work',
+    'no roofline change',
+    'interior only',
+    'interior renovation only',
+    'interior build-out',
+    'tenant finish',
+    'tenant improvement',
+    'interior alterations only'
+  ].some((term) => descriptor.includes(term));
+}
+
+function hasPositiveRoofSignalText(value: string): boolean {
+  const descriptor = value.toLowerCase();
+  return ['roof replacement', 'reroof', 're-roof', 'roof repair', 'roofing', 'roof deck', 'sheet metal', 'flashing', 'waterproofing', 'siding'].some(
+    (term) => descriptor.includes(term)
+  );
+}
+
 function deriveNotes(permitType: string, permitSubtype: string, purpose: string): { whyItMatters: string; likelyTrades: string[] } {
   const descriptor = `${permitType} ${permitSubtype} ${purpose}`.toLowerCase();
   const trades: string[] = [];
   let whyItMatters = 'Commercial permit with active scope and enough valuation to matter for serious subcontractor follow-up.';
-  const suppressRoofing = ['no exterior', 'no roof', 'no roofline change', 'interior only'].some((term) => descriptor.includes(term));
+  const suppressRoofing = hasNegativeRoofSignalText(descriptor) && !hasPositiveRoofSignalText(descriptor);
 
   if (descriptor.includes('tenant finish') || descriptor.includes('build-out') || descriptor.includes('interior')) {
     whyItMatters = 'Interior build-out with active coordination and finish work likely moving quickly.';
@@ -316,9 +342,9 @@ function deriveNotes(permitType: string, permitSubtype: string, purpose: string)
   if (descriptor.includes('shell') || descriptor.includes('foundation') || descriptor.includes('new')) {
     whyItMatters = 'Early-stage commercial work where core trades and exterior systems can position before the job tightens up.';
     trades.push('concrete', 'steel', 'framing', 'electrical', 'plumbing', 'HVAC');
-    if (!suppressRoofing) trades.push('roofing');
+    if (!suppressRoofing && !descriptor.includes('interior')) trades.push('roofing');
   }
-  if (!suppressRoofing && (descriptor.includes('roof') || descriptor.includes('siding'))) {
+  if (!suppressRoofing && hasPositiveRoofSignalText(descriptor)) {
     whyItMatters = 'Envelope-focused permit with roofing, sheet metal, and exterior repair scopes likely relevant.';
     trades.push('roofing', 'sheet metal', 'waterproofing', 'exterior finishes');
   }
@@ -445,6 +471,7 @@ async function enrichProjectNarrative(project: PermitProject, trade: string): Pr
       readableSummary: project.readableSummary,
       aiSource: 'rule'
     };
+    console.log('FINAL SUMMARY SOURCE: fallback');
     console.log('FINAL SUMMARY:', fallbackProject.readableSummary);
     return fallbackProject;
   }
@@ -461,6 +488,7 @@ async function enrichProjectNarrative(project: PermitProject, trade: string): Pr
     tradeSummary,
     aiSource: 'ai'
   };
+  console.log('FINAL SUMMARY SOURCE: ai');
   console.log('FINAL SUMMARY:', enrichedProject.readableSummary);
   return enrichedProject;
 }

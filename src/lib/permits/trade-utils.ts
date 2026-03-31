@@ -41,12 +41,28 @@ function tradeKeywordMap(trade: string): string[] {
 
 function hasNegativeRoofSignal(project: PermitProject): boolean {
   const haystack = `${project.rawPurpose} ${project.purpose}`.toLowerCase();
-  return ['no exterior', 'no roof', 'no roofline change', 'interior only', 'no outside work'].some((term) => haystack.includes(term));
+  return [
+    'no exterior',
+    'no change to exterior',
+    'no exterior work',
+    'no outside work',
+    'no roof',
+    'no roof work',
+    'no roofline change',
+    'interior only',
+    'interior renovation only',
+    'interior build-out',
+    'interior alterations only',
+    'tenant finish',
+    'tenant improvement'
+  ].some((term) => haystack.includes(term));
 }
 
 function hasPositiveRoofSignal(project: PermitProject): boolean {
   const haystack = `${project.rawPurpose} ${project.purpose} ${project.permitSubtype} ${project.permitType}`.toLowerCase();
-  return ['roof', 'roofing', 'roofline', 'siding', 'sheet metal', 'waterproofing', 'exterior envelope'].some((term) => haystack.includes(term));
+  return ['roof replacement', 'reroof', 're-roof', 'roof repair', 'roofing', 'roof deck', 'roofline', 'siding', 'sheet metal', 'waterproofing', 'exterior envelope'].some((term) =>
+    haystack.includes(term)
+  );
 }
 
 export function projectMatchesTrade(project: PermitProject, trade: string): boolean {
@@ -55,6 +71,7 @@ export function projectMatchesTrade(project: PermitProject, trade: string): bool
 
   if (normalized === 'roofing') {
     if (hasNegativeRoofSignal(project) && !hasPositiveRoofSignal(project)) return false;
+    if ((project.permitSubtype || project.permitType || '').toLowerCase().includes('tenant') && !hasPositiveRoofSignal(project)) return false;
   }
 
   const keywords = tradeKeywordMap(trade);
