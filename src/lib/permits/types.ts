@@ -77,6 +77,7 @@ export type DashboardPayload = {
     lastAiCallAttempted: boolean;
     lastAiResultSource: InterpretationSource | 'unknown';
     lastAiFailureReason: string;
+    lastCacheStatus: string;
     lastSummarySource: InterpretationSource | 'unknown';
     lastTradeSource: InterpretationSource | 'unknown';
   };

@@ -217,11 +217,13 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [onboardingReady, setOnboardingReady] = useState(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [debugProjectId, setDebugProjectId] = useState('');
+  const [debugBypassCache, setDebugBypassCache] = useState(true);
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [isTestingAi, setIsTestingAi] = useState(false);
   const [aiTestResult, setAiTestResult] = useState<string>('');
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
+  const prewarmSignatureRef = useRef('');
 
   const deferredNeighborhood = useDeferredValue(filters.neighborhood);
   const deferredContractor = useDeferredValue(filters.contractorQuery);
@@ -312,6 +314,10 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   );
   const dashboardPreviewContacts = visibleContacts.slice(0, 3);
   const dashboardPreviewProjects = visibleProjects.slice(0, 3);
+  const prewarmIds = useMemo(
+    () => Array.from(new Set((activeTab === 'home' ? dashboardPreviewProjects : visibleProjects).slice(0, 24).map((project) => project.id))),
+    [activeTab, dashboardPreviewProjects, visibleProjects]
+  );
   const marketNote = buildMarketNote(profile.trade, baseProjects);
   const jobsSummary = useMemo(() => {
     if (!profile.trade) {
@@ -324,6 +330,32 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
 
     return `${visibleProjects.length} ${profile.trade.toLowerCase()} permits in ${labelForTimeframe(timeframeState.displayed)}.`;
   }, [profile.trade, timeframeState.displayed, visibleProjects.length]);
+
+  useEffect(() => {
+    if (!prewarmIds.length) return;
+
+    const signature = `${profile.trade}::${prewarmIds.join(',')}`;
+    if (prewarmSignatureRef.current === signature) return;
+    prewarmSignatureRef.current = signature;
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const response = await fetch('/api/permits/prewarm-ai', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: prewarmIds, trade: profile.trade })
+        });
+
+        if (!response.ok) return;
+        const result = (await response.json()) as { debug: DashboardPayload['debug'] };
+        startTransition(() => setPayload((current) => ({ ...current, debug: { ...current.debug, ...result.debug } })));
+      } catch (error) {
+        console.error(error);
+      }
+    }, 500);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [prewarmIds, profile.trade]);
 
   function updateProfile<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
     setProfile((current) => ({ ...current, [key]: value }));
@@ -361,7 +393,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       const response = await fetch('/api/permits/regenerate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, trade: profile.trade })
+        body: JSON.stringify({ id, trade: profile.trade, bypassCache: debugBypassCache })
       });
 
       if (!response.ok) throw new Error('Failed to regenerate AI interpretation');
@@ -412,6 +444,8 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
           failureReason: string;
           rawResponseText: string;
           rawResponseShape: string;
+          cacheStatus: string;
+          cachedBefore: string;
           parsedSummary: string;
           parsedWhyItMatters: string;
           parsedTradeReason: string;
@@ -765,6 +799,10 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       <div className="mt-1 font-semibold text-white">{payload.debug.lastAiFailureReason}</div>
                     </div>
                     <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last cache status</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.lastCacheStatus}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last summary source</div>
                       <div className="mt-1 font-semibold text-white">{payload.debug.lastSummarySource}</div>
                     </div>
@@ -776,6 +814,10 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
 
                   <div className="mt-4">
                     <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Debug one job</div>
+                    <label className="mt-3 flex items-center gap-2 text-sm text-stone-300">
+                      <input type="checkbox" checked={debugBypassCache} onChange={(event) => setDebugBypassCache(event.target.checked)} className="rounded border-white/20 bg-white/5" />
+                      Bypass cache on Generate AI now
+                    </label>
                     <div className="mt-2 flex flex-wrap gap-3">
                       <input
                         value={debugProjectId}
@@ -802,7 +844,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                           isRegenerating || !debugProjectId.trim() ? 'bg-white/10 text-stone-500' : 'bg-amber-300 text-stone-900'
                         )}
                       >
-                        {isRegenerating ? 'Regenerating…' : 'Regenerate'}
+                        {isRegenerating ? 'Generating…' : 'Generate AI now'}
                       </button>
                     </div>
                     {regenerateStatus ? <div className="mt-3 text-sm text-stone-300">{regenerateStatus}</div> : null}
