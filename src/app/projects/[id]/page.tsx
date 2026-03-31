@@ -12,6 +12,7 @@ function formatPhoneHref(phone: string): string {
 export default async function ProjectDetailPage({ params, searchParams }: { params: { id: string }; searchParams: { trade?: string } }) {
   const project = await getProjectById(params.id, searchParams.trade || '');
   if (!project) notFound();
+  const showWhyItMatters = project.whyItMatters.toLowerCase() !== project.readableSummary.toLowerCase();
 
   return (
     <main className="mx-auto min-h-screen w-full max-w-4xl px-4 pb-16 pt-6 text-stone-100 sm:px-6">
@@ -27,6 +28,7 @@ export default async function ProjectDetailPage({ params, searchParams }: { para
             <p className="mt-3 text-sm text-stone-300">
               Permit {project.permitNumber} • {project.permitSubtype || project.permitType}
             </p>
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-stone-100">{project.readableSummary || 'No project summary listed on the permit.'}</p>
             <div className="mt-4 flex flex-wrap gap-3 text-sm font-semibold">
               {project.contactPhone ? (
                 <a href={formatPhoneHref(project.contactPhone)} className="rounded-full bg-amber-400 px-4 py-2 text-stone-950 active:scale-[0.98]">
@@ -45,20 +47,14 @@ export default async function ProjectDetailPage({ params, searchParams }: { para
         </div>
 
         <div className="mt-6 grid gap-4 sm:grid-cols-2">
-          <div className="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400">Project snapshot</div>
-            <p className="mt-2 text-sm leading-6 text-stone-100">{project.readableSummary || 'No purpose text listed on the permit.'}</p>
-            {project.purpose && project.purpose !== project.readableSummary ? <p className="mt-3 text-sm leading-6 text-stone-300">{project.purpose}</p> : null}
-          </div>
           <div className="rounded-2xl bg-amber-400/10 p-4 ring-1 ring-amber-300/20">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-200">Why it matters</div>
-            <p className="mt-2 text-sm leading-6 text-stone-100">{project.whyItMatters}</p>
-            <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400">Likely trades involved</div>
+            {showWhyItMatters ? <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-200">Why it matters</div> : null}
+            {showWhyItMatters ? <p className="mt-2 text-sm leading-6 text-stone-100">{project.whyItMatters}</p> : null}
+            <div className={showWhyItMatters ? 'mt-4 text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400' : 'text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400'}>
+              Likely trades involved
+            </div>
             <p className="mt-2 text-sm leading-6 text-stone-200">{project.likelyTradesNote}</p>
           </div>
-        </div>
-
-        <div className="mt-6 grid gap-3 sm:grid-cols-2">
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
             <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400">Key fields</div>
             <dl className="mt-3 space-y-3 text-sm">
@@ -112,7 +108,9 @@ export default async function ProjectDetailPage({ params, searchParams }: { para
               </div>
             </dl>
           </div>
+        </div>
 
+        <div className="mt-6 grid gap-3 sm:grid-cols-2">
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
             <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400">Raw permit details</div>
             <dl className="mt-3 space-y-3 text-sm">

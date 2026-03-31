@@ -64,6 +64,7 @@ export function projectMatchesTrade(project: PermitProject, trade: string): bool
 
 export function buildTradeRelevance(project: PermitProject, trade: string): string {
   if (!trade) return project.whyItMatters;
+  if (project.tradeSummary && project.tradeSummary !== project.readableSummary) return project.tradeSummary;
 
   const normalized = normalizeTradeValue(trade);
   const match = projectMatchesTrade(project, trade);

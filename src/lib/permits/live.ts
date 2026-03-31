@@ -440,24 +440,29 @@ async function enrichProjectNarrative(project: PermitProject, trade: string): Pr
   });
 
   if (!aiNarrative) {
-    return {
+    const fallbackProject: PermitProject = {
       ...project,
-      tradeSummary: trade ? project.tradeSummary : project.tradeSummary,
+      readableSummary: project.readableSummary,
       aiSource: 'rule'
     };
+    console.log('FINAL SUMMARY:', fallbackProject.readableSummary);
+    return fallbackProject;
   }
 
-  const snapshot = aiNarrative.snapshot || project.readableSummary;
-  const whyItMatters = aiNarrative.whyItMatters && !textsOverlap(aiNarrative.whyItMatters, snapshot) ? aiNarrative.whyItMatters : '';
-  const tradeSummary = aiNarrative.tradeNote && !textsOverlap(aiNarrative.tradeNote, whyItMatters || snapshot) ? aiNarrative.tradeNote : project.tradeSummary;
+  const snapshot = aiNarrative.snapshot?.trim() || project.readableSummary;
+  const whyItMatters = aiNarrative.whyItMatters && !textsOverlap(aiNarrative.whyItMatters, snapshot) ? aiNarrative.whyItMatters : project.whyItMatters;
+  const tradeSummary =
+    aiNarrative.tradeNote && !textsOverlap(aiNarrative.tradeNote, whyItMatters || snapshot) ? aiNarrative.tradeNote : project.tradeSummary;
 
-  return {
+  const enrichedProject: PermitProject = {
     ...project,
     readableSummary: snapshot,
-    whyItMatters: whyItMatters || project.whyItMatters,
+    whyItMatters,
     tradeSummary,
     aiSource: 'ai'
   };
+  console.log('FINAL SUMMARY:', enrichedProject.readableSummary);
+  return enrichedProject;
 }
 
 async function enrichProjects(projects: PermitProject[], trade = ''): Promise<PermitProject[]> {

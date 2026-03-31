@@ -1,5 +1,7 @@
 import 'server-only';
 
+import OpenAI from 'openai';
+
 type NarrativeInput = {
   permitNumber: string;
   permitType: string;
@@ -17,8 +19,8 @@ export type AiNarrative = {
 };
 
 const AI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 6000);
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
-const OPENAI_API_URL = process.env.OPENAI_API_URL || 'https://api.openai.com/v1/responses';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const OPENAI_API_URL = (process.env.OPENAI_API_URL || 'https://api.openai.com/v1').replace(/\/responses\/?$/, '');
 
 const narrativeCache = new Map<string, Promise<AiNarrative | null>>();
 
@@ -43,34 +45,15 @@ function extractJson(text: string): AiNarrative | null {
 
   try {
     const parsed = JSON.parse(cleaned) as Partial<AiNarrative>;
-    if (!parsed.snapshot || !parsed.tradeNote) return null;
+    if (!parsed.snapshot) return null;
     return {
       snapshot: parsed.snapshot.trim(),
       whyItMatters: (parsed.whyItMatters || '').trim(),
-      tradeNote: parsed.tradeNote.trim()
+      tradeNote: (parsed.tradeNote || '').trim()
     };
   } catch {
     return null;
   }
-}
-
-function extractOutputText(payload: unknown): string {
-  if (!payload || typeof payload !== 'object') return '';
-
-  const data = payload as {
-    output_text?: string;
-    output?: Array<{ content?: Array<{ text?: string; type?: string }> }>;
-  };
-
-  if (typeof data.output_text === 'string' && data.output_text.trim()) return data.output_text.trim();
-
-  const chunks =
-    data.output
-      ?.flatMap((item) => item.content || [])
-      .map((content) => content.text || '')
-      .filter(Boolean) || [];
-
-  return chunks.join('\n').trim();
 }
 
 export async function generateAiNarrative(input: NarrativeInput): Promise<AiNarrative | null> {
@@ -81,62 +64,52 @@ export async function generateAiNarrative(input: NarrativeInput): Promise<AiNarr
   if (cached) return cached;
 
   const promise = (async () => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+    const client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+      baseURL: OPENAI_API_URL
+    });
 
     try {
-      const response = await fetch(OPENAI_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model: OPENAI_MODEL,
-          input: [
-            {
-              role: 'developer',
-              content: [
-                {
-                  type: 'input_text',
-                  text:
-                    'You rewrite permit descriptions for a mobile construction intelligence app. Return compact JSON with keys snapshot, whyItMatters, tradeNote. Keep each value short. Plain English only. No hype, no jargon, no duplication. Do not imply a trade unless the permit makes it plausible. If permit text says no exterior or no roof work, do not imply roofing.'
-                }
-              ]
-            },
-            {
-              role: 'user',
-              content: [
-                {
-                  type: 'input_text',
-                  text: JSON.stringify({
-                    permitNumber: input.permitNumber,
-                    permitType: input.permitType,
-                    permitSubtype: input.permitSubtype,
-                    purpose: input.purpose,
-                    valuation: input.valuation,
-                    selectedTrade: input.trade || null,
-                    likelyTrades: input.likelyTrades
-                  })
-                }
-              ]
-            }
-          ]
+      const prompt = [
+        'Summarize this construction permit for a subcontractor in 1-2 sentences max.',
+        'Focus on what work is being done and why it is relevant.',
+        'Avoid repetition. Be direct.',
+        'Return JSON with keys: snapshot, whyItMatters, tradeNote.',
+        'If whyItMatters or tradeNote would repeat snapshot, leave them empty.',
+        'Do not imply roofing if the permit says there is no roof or exterior work.',
+        JSON.stringify({
+          permitNumber: input.permitNumber,
+          permitType: input.permitType,
+          permitSubtype: input.permitSubtype,
+          purpose: input.purpose,
+          valuation: input.valuation,
+          selectedTrade: input.trade || null,
+          likelyTrades: input.likelyTrades
         })
-      });
+      ].join('\n');
 
-      if (!response.ok) return null;
+      console.log('AI CALLED');
 
-      const payload = (await response.json()) as unknown;
-      const outputText = extractOutputText(payload);
+      const response = await Promise.race([
+        client.responses.create({
+          model: OPENAI_MODEL,
+          input: prompt
+        }),
+        new Promise<null>((resolve) => {
+          setTimeout(() => resolve(null), AI_TIMEOUT_MS);
+        })
+      ]);
+
+      if (!response) return null;
+
+      const outputText = response.output_text?.trim() || '';
       if (!outputText) return null;
 
-      return extractJson(outputText);
+      const narrative = extractJson(outputText);
+      console.log('AI RESULT:', narrative);
+      return narrative;
     } catch {
       return null;
-    } finally {
-      clearTimeout(timeoutId);
     }
   })();
 
