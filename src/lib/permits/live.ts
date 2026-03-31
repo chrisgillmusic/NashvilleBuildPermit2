@@ -989,7 +989,13 @@ export async function runTruthModeTestForProject(id: string, trade = '') {
       dbSaveResult: { success: false, reason: 'project not found' },
       dbReadBackResult: { success: false, reason: 'project not found' },
       uiVisibleFieldUpdated: false,
-      failingStage: 'fetch_permit'
+      failingStage: 'fetch_permit',
+      openaiErrorMessage: '',
+      openaiErrorName: '',
+      openaiStatusCode: null,
+      requestDurationMs: 0,
+      apiKeyDetected: getAiDebugState().apiKeyPresent,
+      clientInitialized: getAiDebugState().aiEnabled
     };
   }
 
@@ -1004,14 +1010,17 @@ export async function runTruthModeTestForProject(id: string, trade = '') {
     preview: safePreview(prompt, 220)
   });
 
-  const requestStarted = Date.now();
   const aiResult = await requestBaseSummaryTruth(input);
-  const requestDuration = Date.now() - requestStarted;
 
   stages.push({
     stage: 'openai_request',
-    success: aiResult.attempted && !aiResult.failureReason.startsWith('request failed') && aiResult.failureReason !== 'timeout' && aiResult.failureReason !== 'missing key',
-    durationMs: requestDuration,
+    success:
+      aiResult.attempted &&
+      !aiResult.failureReason.startsWith('request failed') &&
+      aiResult.failureReason !== 'timeout' &&
+      aiResult.failureReason !== 'missing key' &&
+      aiResult.failureReason !== 'client init failed',
+    durationMs: aiResult.requestDurationMs,
     error: aiResult.failureReason === 'success' || aiResult.failureReason === 'empty output' || aiResult.failureReason.startsWith('invalid JSON') || aiResult.failureReason === 'missing summary field'
       ? undefined
       : aiResult.failureReason
@@ -1109,6 +1118,12 @@ export async function runTruthModeTestForProject(id: string, trade = '') {
     dbReadBackResult,
     uiVisibleFieldUpdated,
     failingStage,
+    openaiErrorMessage: aiResult.openaiErrorMessage,
+    openaiErrorName: aiResult.openaiErrorName,
+    openaiStatusCode: aiResult.openaiStatusCode,
+    requestDurationMs: aiResult.requestDurationMs,
+    apiKeyDetected: aiResult.apiKeyDetected,
+    clientInitialized: aiResult.clientInitialized,
     uiSourceCheck: {
       summaryField: 'project.readableSummary',
       wouldDisplayAi: finalResultSource === 'ai'

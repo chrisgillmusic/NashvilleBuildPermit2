@@ -5,9 +5,9 @@ import { createHash } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import type { InterpretationSource } from './types';
 
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 6 • Summary Engine';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 8 • OpenAI Request Fix';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const AI_TIMEOUT_MS = 12_000;
+const AI_TIMEOUT_MS = 20_000;
 const SUMMARY_STORAGE_PREFIX = 'summary_engine:v1:base:';
 const TRADE_NOTE_STORAGE_PREFIX = 'summary_engine:v1:trade:';
 
@@ -82,6 +82,12 @@ export type BaseSummaryDebugResult = {
   cacheStatus: string;
   parsedSummary: string;
   stored: boolean;
+  requestDurationMs: number;
+  openaiErrorMessage: string;
+  openaiErrorName: string;
+  openaiStatusCode: number | null;
+  apiKeyDetected: boolean;
+  clientInitialized: boolean;
 };
 
 export type TradeNoteDebugResult = {
@@ -116,13 +122,12 @@ export type TruthStageResult = {
 type StoredBaseSummaryShape = Omit<StoredBaseSummary, 'cacheKey'>;
 type StoredTradeNoteShape = Omit<StoredTradeNote, 'cacheKey'>;
 
-const client = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 const summaryMemoryCache = new Map<string, StoredBaseSummary>();
 const tradeNoteMemoryCache = new Map<string, StoredTradeNote>();
 const inFlight = new Map<string, Promise<BaseSummaryDebugResult | TradeNoteDebugResult>>();
 
 let debugState: AiDebugState = {
-  aiEnabled: Boolean(client),
+  aiEnabled: Boolean(process.env.OPENAI_API_KEY),
   apiKeyPresent: Boolean(process.env.OPENAI_API_KEY),
   appVersion: APP_VERSION,
   lastAiCallAttempted: false,
@@ -133,6 +138,31 @@ let debugState: AiDebugState = {
 
 function setDebugState(update: Partial<AiDebugState>) {
   debugState = { ...debugState, ...update };
+}
+
+function getOpenAiClient() {
+  const apiKey = process.env.OPENAI_API_KEY?.trim() || '';
+  if (!apiKey) {
+    return {
+      apiKeyDetected: false,
+      clientInitialized: false,
+      client: null as OpenAI | null
+    };
+  }
+
+  try {
+    return {
+      apiKeyDetected: true,
+      clientInitialized: true,
+      client: new OpenAI({ apiKey })
+    };
+  } catch {
+    return {
+      apiKeyDetected: true,
+      clientInitialized: false,
+      client: null as OpenAI | null
+    };
+  }
 }
 
 function normalizeText(value: unknown): string {
@@ -211,16 +241,12 @@ function maybeExtractJsonBlock(text: string): string {
 
 function buildBaseSummaryPrompt(input: BaseSummaryInput): string {
   return [
-    'Summarize this commercial building permit for a subcontractor.',
-    'Write one short, useful sentence in plain English.',
-    'Be specific about what work is happening.',
-    'Do not copy permit sludge or metadata.',
-    'Do not use marketing or corporate language.',
+    'Summarize this construction permit for a subcontractor in one short sentence.',
+    'Return valid JSON only: {"summary":"..."}',
     '',
     `Project ID: ${input.projectId}`,
     `Permit type: ${input.permitType || 'Unknown'}`,
     `Permit subtype: ${input.permitSubtype || 'Unknown'}`,
-    `Location: ${input.location || 'Unknown'}`,
     `Valuation: ${input.valuation ? `$${Math.round(input.valuation).toLocaleString('en-US')}` : 'Unknown'}`,
     `Description: ${input.purpose || 'No description available'}`
   ].join('\n');
@@ -616,11 +642,28 @@ export async function generateAndStoreBaseSummary(
   options?: { bypassCache?: boolean }
 ): Promise<BaseSummaryDebugResult> {
   const cacheKey = buildBaseCacheKey(input);
+  const { client, apiKeyDetected, clientInitialized } = getOpenAiClient();
 
   if (!client) {
-    console.log('AI SKIPPED: missing key');
-    setDebugState({ lastAiCallAttempted: false, lastAiResultSource: 'fallback', lastAiFailureReason: 'missing key', lastCacheStatus: 'miss' });
-    return { attempted: false, resultSource: 'fallback', failureReason: 'missing key', rawResponseText: '', rawResponseShape: '', cacheStatus: 'miss', parsedSummary: '', stored: false };
+    const reason = apiKeyDetected ? 'client init failed' : 'missing key';
+    console.log(`AI SKIPPED: ${reason}`);
+    setDebugState({ lastAiCallAttempted: false, lastAiResultSource: 'fallback', lastAiFailureReason: reason, lastCacheStatus: 'miss' });
+    return {
+      attempted: false,
+      resultSource: 'fallback',
+      failureReason: reason,
+      rawResponseText: '',
+      rawResponseShape: '',
+      cacheStatus: 'miss',
+      parsedSummary: '',
+      stored: false,
+      requestDurationMs: 0,
+      openaiErrorMessage: reason,
+      openaiErrorName: apiKeyDetected ? 'ClientInitFailed' : 'MissingKey',
+      openaiStatusCode: null,
+      apiKeyDetected,
+      clientInitialized
+    };
   }
 
   if (!options?.bypassCache) {
@@ -636,7 +679,13 @@ export async function generateAndStoreBaseSummary(
         rawResponseShape: '',
         cacheStatus: 'hit',
         parsedSummary: cached.summary.summary,
-        stored: true
+        stored: true,
+        requestDurationMs: 0,
+        openaiErrorMessage: '',
+        openaiErrorName: '',
+        openaiStatusCode: null,
+        apiKeyDetected,
+        clientInitialized
       };
     }
   }
@@ -645,8 +694,11 @@ export async function generateAndStoreBaseSummary(
   if (existing) return existing as Promise<BaseSummaryDebugResult>;
 
   const promise = (async (): Promise<BaseSummaryDebugResult> => {
-    console.log('AI CALLED');
-    console.log('AI REQUEST START');
+    const requestStarted = Date.now();
+    const payloadPreview = buildBaseSummaryPrompt(input);
+    console.log('OPENAI REQUEST START');
+    console.log(`OPENAI REQUEST MODEL: ${OPENAI_MODEL}`);
+    console.log(`OPENAI REQUEST PAYLOAD PREVIEW: ${payloadPreview.slice(0, 240)}`);
     setDebugState({
       lastAiCallAttempted: true,
       lastAiResultSource: 'fallback',
@@ -658,22 +710,60 @@ export async function generateAndStoreBaseSummary(
       const response = await client.responses.create(
         {
           model: OPENAI_MODEL,
-          input: buildBaseSummaryPrompt(input)
+          input: payloadPreview
         },
         {
           signal: AbortSignal.timeout(AI_TIMEOUT_MS)
         }
       );
 
-      console.log('AI REQUEST SUCCESS');
+      console.log('OPENAI REQUEST SUCCESS');
       const { text, shape } = extractResponseText(response);
-      const parsedSummary = normalizeSummaryText(text);
+      console.log(`OPENAI RESPONSE RAW PREVIEW: ${text.slice(0, 240)}`);
+      const parsed = parseSimpleSummaryJson(text);
 
-      if (!parsedSummary) {
-        console.log('AI EMPTY OUTPUT');
+      if (!text) {
+        console.log('OPENAI PARSE ERROR: empty output');
         setDebugState({ lastAiResultSource: 'fallback', lastAiFailureReason: 'empty output', lastCacheStatus: 'miss' });
-        return { attempted: true, resultSource: 'fallback', failureReason: 'empty output', rawResponseText: text, rawResponseShape: shape, cacheStatus: 'miss', parsedSummary: '', stored: false };
+        return {
+          attempted: true,
+          resultSource: 'fallback',
+          failureReason: 'empty output',
+          rawResponseText: text,
+          rawResponseShape: shape,
+          cacheStatus: 'miss',
+          parsedSummary: '',
+          stored: false,
+          requestDurationMs: Date.now() - requestStarted,
+          openaiErrorMessage: 'empty output',
+          openaiErrorName: 'EmptyOutput',
+          openaiStatusCode: null,
+          apiKeyDetected,
+          clientInitialized
+        };
       }
+
+      if (!parsed.summary) {
+        console.log(`OPENAI PARSE ERROR: ${parsed.failureReason}`);
+        setDebugState({ lastAiResultSource: 'fallback', lastAiFailureReason: parsed.failureReason, lastCacheStatus: 'miss' });
+        return {
+          attempted: true,
+          resultSource: 'fallback',
+          failureReason: parsed.failureReason,
+          rawResponseText: text,
+          rawResponseShape: shape,
+          cacheStatus: 'miss',
+          parsedSummary: '',
+          stored: false,
+          requestDurationMs: Date.now() - requestStarted,
+          openaiErrorMessage: parsed.failureReason,
+          openaiErrorName: 'ParseError',
+          openaiStatusCode: null,
+          apiKeyDetected,
+          clientInitialized
+        };
+      }
+      console.log('OPENAI PARSE SUCCESS');
 
       const record: StoredBaseSummary = {
         projectId: input.projectId,
@@ -682,11 +772,11 @@ export async function generateAndStoreBaseSummary(
         source: 'ai',
         generatedAt: new Date().toISOString(),
         version: APP_VERSION,
-        summary: parsedSummary
+        summary: parsed.summary
       };
       const stored = await storeBaseSummary(record);
       console.log('AI SUCCESS');
-      console.log('AI RESULT:', parsedSummary);
+      console.log('AI RESULT:', parsed.summary);
       setDebugState({
         lastAiResultSource: 'ai',
         lastAiFailureReason: 'success',
@@ -699,20 +789,61 @@ export async function generateAndStoreBaseSummary(
         rawResponseText: text,
         rawResponseShape: shape,
         cacheStatus: stored ? options?.bypassCache ? 'refreshed' : 'stored' : 'stored-in-memory',
-        parsedSummary,
-        stored
+        parsedSummary: parsed.summary,
+        stored,
+        requestDurationMs: Date.now() - requestStarted,
+        openaiErrorMessage: '',
+        openaiErrorName: '',
+        openaiStatusCode: null,
+        apiKeyDetected,
+        clientInitialized
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const errorName = error instanceof Error ? error.name : 'OpenAIError';
+      const statusCode =
+        typeof error === 'object' && error !== null && 'status' in error && typeof (error as { status?: unknown }).status === 'number'
+          ? (error as { status: number }).status
+          : null;
       if (message.toLowerCase().includes('timeout') || message.toLowerCase().includes('aborted')) {
-        console.log('AI SKIPPED: timeout');
+        console.log('OPENAI REQUEST ERROR: timeout');
         setDebugState({ lastAiResultSource: 'fallback', lastAiFailureReason: 'timeout', lastCacheStatus: 'miss' });
-        return { attempted: true, resultSource: 'fallback', failureReason: 'timeout', rawResponseText: '', rawResponseShape: '', cacheStatus: 'miss', parsedSummary: '', stored: false };
+        return {
+          attempted: true,
+          resultSource: 'fallback',
+          failureReason: 'timeout',
+          rawResponseText: '',
+          rawResponseShape: '',
+          cacheStatus: 'miss',
+          parsedSummary: '',
+          stored: false,
+          requestDurationMs: Date.now() - requestStarted,
+          openaiErrorMessage: message,
+          openaiErrorName: errorName,
+          openaiStatusCode: statusCode,
+          apiKeyDetected,
+          clientInitialized
+        };
       }
 
-      console.log(`AI REQUEST FAILED: ${message}`);
+      console.log(`OPENAI REQUEST ERROR: ${message}`);
       setDebugState({ lastAiResultSource: 'fallback', lastAiFailureReason: `request failed: ${message}`, lastCacheStatus: 'miss' });
-      return { attempted: true, resultSource: 'fallback', failureReason: `request failed: ${message}`, rawResponseText: '', rawResponseShape: '', cacheStatus: 'miss', parsedSummary: '', stored: false };
+      return {
+        attempted: true,
+        resultSource: 'fallback',
+        failureReason: `request failed: ${message}`,
+        rawResponseText: '',
+        rawResponseShape: '',
+        cacheStatus: 'miss',
+        parsedSummary: '',
+        stored: false,
+        requestDurationMs: Date.now() - requestStarted,
+        openaiErrorMessage: message,
+        openaiErrorName: errorName,
+        openaiStatusCode: statusCode,
+        apiKeyDetected,
+        clientInitialized
+      };
     } finally {
       inFlight.delete(cacheKey);
     }
@@ -723,38 +854,50 @@ export async function generateAndStoreBaseSummary(
 }
 
 export async function requestBaseSummaryTruth(input: BaseSummaryInput): Promise<BaseSummaryDebugResult> {
+  const { client, apiKeyDetected, clientInitialized } = getOpenAiClient();
   if (!client) {
-    console.log('AI SKIPPED: missing key');
+    const reason = apiKeyDetected ? 'client init failed' : 'missing key';
+    console.log(`AI SKIPPED: ${reason}`);
     return {
       attempted: false,
       resultSource: 'fallback',
-      failureReason: 'missing key',
+      failureReason: reason,
       rawResponseText: '',
       rawResponseShape: '',
       cacheStatus: 'miss',
       parsedSummary: '',
-      stored: false
+      stored: false,
+      requestDurationMs: 0,
+      openaiErrorMessage: reason,
+      openaiErrorName: apiKeyDetected ? 'ClientInitFailed' : 'MissingKey',
+      openaiStatusCode: null,
+      apiKeyDetected,
+      clientInitialized
     };
   }
 
-  console.log('AI CALLED');
-  console.log('AI REQUEST START');
+  const requestStarted = Date.now();
+  const payloadPreview = buildBaseSummaryPrompt(input);
+  console.log('OPENAI REQUEST START');
+  console.log(`OPENAI REQUEST MODEL: ${OPENAI_MODEL}`);
+  console.log(`OPENAI REQUEST PAYLOAD PREVIEW: ${payloadPreview.slice(0, 240)}`);
 
   try {
     const response = await client.responses.create(
       {
         model: OPENAI_MODEL,
-        input: buildBaseSummaryPrompt(input)
+        input: payloadPreview
       },
       {
         signal: AbortSignal.timeout(AI_TIMEOUT_MS)
       }
     );
 
-    console.log('AI REQUEST SUCCESS');
+    console.log('OPENAI REQUEST SUCCESS');
     const { text, shape } = extractResponseText(response);
+    console.log(`OPENAI RESPONSE RAW PREVIEW: ${text.slice(0, 240)}`);
     if (!text) {
-      console.log('AI EMPTY OUTPUT');
+      console.log('OPENAI PARSE ERROR: empty output');
       return {
         attempted: true,
         resultSource: 'fallback',
@@ -763,13 +906,19 @@ export async function requestBaseSummaryTruth(input: BaseSummaryInput): Promise<
         rawResponseShape: shape,
         cacheStatus: 'miss',
         parsedSummary: '',
-        stored: false
+        stored: false,
+        requestDurationMs: Date.now() - requestStarted,
+        openaiErrorMessage: 'empty output',
+        openaiErrorName: 'EmptyOutput',
+        openaiStatusCode: null,
+        apiKeyDetected,
+        clientInitialized
       };
     }
 
     const parsed = parseSimpleSummaryJson(text);
     if (!parsed.summary) {
-      console.log('AI PARSE FAILED:', parsed.failureReason);
+      console.log(`OPENAI PARSE ERROR: ${parsed.failureReason}`);
       return {
         attempted: true,
         resultSource: 'fallback',
@@ -778,12 +927,17 @@ export async function requestBaseSummaryTruth(input: BaseSummaryInput): Promise<
         rawResponseShape: shape,
         cacheStatus: 'miss',
         parsedSummary: '',
-        stored: false
+        stored: false,
+        requestDurationMs: Date.now() - requestStarted,
+        openaiErrorMessage: parsed.failureReason,
+        openaiErrorName: 'ParseError',
+        openaiStatusCode: null,
+        apiKeyDetected,
+        clientInitialized
       };
     }
 
-    console.log('AI SUCCESS');
-    console.log('AI RESULT:', parsed.summary);
+    console.log('OPENAI PARSE SUCCESS');
     return {
       attempted: true,
       resultSource: 'ai',
@@ -792,12 +946,23 @@ export async function requestBaseSummaryTruth(input: BaseSummaryInput): Promise<
       rawResponseShape: shape,
       cacheStatus: 'miss',
       parsedSummary: parsed.summary,
-      stored: false
+      stored: false,
+      requestDurationMs: Date.now() - requestStarted,
+      openaiErrorMessage: '',
+      openaiErrorName: '',
+      openaiStatusCode: null,
+      apiKeyDetected,
+      clientInitialized
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const errorName = error instanceof Error ? error.name : 'OpenAIError';
+    const statusCode =
+      typeof error === 'object' && error !== null && 'status' in error && typeof (error as { status?: unknown }).status === 'number'
+        ? (error as { status: number }).status
+        : null;
     if (message.toLowerCase().includes('timeout') || message.toLowerCase().includes('aborted')) {
-      console.log('AI SKIPPED: timeout');
+      console.log('OPENAI REQUEST ERROR: timeout');
       return {
         attempted: true,
         resultSource: 'fallback',
@@ -806,11 +971,17 @@ export async function requestBaseSummaryTruth(input: BaseSummaryInput): Promise<
         rawResponseShape: '',
         cacheStatus: 'miss',
         parsedSummary: '',
-        stored: false
+        stored: false,
+        requestDurationMs: Date.now() - requestStarted,
+        openaiErrorMessage: message,
+        openaiErrorName: errorName,
+        openaiStatusCode: statusCode,
+        apiKeyDetected,
+        clientInitialized
       };
     }
 
-    console.log(`AI REQUEST FAILED: ${message}`);
+    console.log(`OPENAI REQUEST ERROR: ${message}`);
     return {
       attempted: true,
       resultSource: 'fallback',
@@ -819,7 +990,13 @@ export async function requestBaseSummaryTruth(input: BaseSummaryInput): Promise<
       rawResponseShape: '',
       cacheStatus: 'miss',
       parsedSummary: '',
-      stored: false
+      stored: false,
+      requestDurationMs: Date.now() - requestStarted,
+      openaiErrorMessage: message,
+      openaiErrorName: errorName,
+      openaiStatusCode: statusCode,
+      apiKeyDetected,
+      clientInitialized
     };
   }
 }
@@ -887,6 +1064,7 @@ export async function generateAndStoreTradeNote(
   options?: { bypassCache?: boolean }
 ): Promise<TradeNoteDebugResult> {
   const cacheKey = buildTradeCacheKey(input);
+  const { client } = getOpenAiClient();
 
   if (!client) {
     console.log('AI SKIPPED: missing key');

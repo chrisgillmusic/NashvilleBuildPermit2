@@ -42,7 +42,7 @@ type TimeframeResolution = {
 
 const PROFILE_KEY = 'nbi-profile-v1';
 const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 7 • Truth Mode';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 8 • OpenAI Request Fix';
 
 const ONBOARDING_CARDS = [
   'Nashville Build Insider scans live permit data to surface real construction opportunities.',
