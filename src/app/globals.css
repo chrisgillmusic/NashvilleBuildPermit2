@@ -21,6 +21,28 @@ body {
   @apply text-stone-900 antialiased;
   background: transparent;
   font-family: var(--font-sans), sans-serif;
+  position: relative;
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: -24px;
+  background:
+    linear-gradient(rgba(20, 18, 16, 0.48), rgba(20, 18, 16, 0.48)),
+    url('/images/bg-main.jpg') center/cover no-repeat;
+  filter: blur(10px);
+  transform: scale(1.05);
+  z-index: -2;
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(17, 15, 13, 0.18), rgba(17, 15, 13, 0.08));
+  z-index: -1;
+  pointer-events: none;
 }
 
 a,

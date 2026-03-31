@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { formatDistanceToNowStrict, isAfter, parseISO, subDays } from 'date-fns';
 import { formatCurrency } from '@/lib/format';
-import { projectViewForMode, projectMatchesTrade, TRADE_OPTIONS, type FeedMode } from '@/lib/permits/trade-utils';
+import { projectMatchesTrade, projectViewForMode, TRADE_OPTIONS, type FeedMode } from '@/lib/permits/trade-utils';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject } from '@/lib/permits/types';
 import { PermitFeedCard } from './permit-feed-card';
 
@@ -17,6 +17,7 @@ const ProjectMap = dynamic(() => import('./project-map').then((module) => module
 
 type Props = {
   initialPayload: DashboardPayload;
+  initialTab?: 'home' | 'jobs' | 'builders' | 'profile';
 };
 
 type TabKey = 'home' | 'jobs' | 'builders' | 'profile';
@@ -31,6 +32,13 @@ type UserProfile = {
   budgetMin: number;
   budgetMax: number;
   defaultFeedMode: FeedMode;
+};
+
+type TimeframeResolution = {
+  requested: TimeframeKey;
+  displayed: TimeframeKey;
+  projects: PermitProject[];
+  message: string | null;
 };
 
 const PROFILE_KEY = 'nbi-profile-v1';
@@ -112,61 +120,106 @@ function getInitialProfile(payload: DashboardPayload): UserProfile {
   };
 }
 
-function getProjectsForTimeframe(projects: PermitProject[], timeframe: TimeframeKey): PermitProject[] {
+function projectsForTimeframe(projects: PermitProject[], timeframe: TimeframeKey): PermitProject[] {
   const now = new Date();
+
   if (timeframe === 'new') {
     return projects.filter((project) => isAfter(parseISO(project.issueDate), subDays(now, 7)));
   }
+
   if (timeframe === 'active') {
     return projects.filter((project) => {
       const issued = parseISO(project.issueDate);
       return isAfter(issued, subDays(now, 30)) && !isAfter(issued, subDays(now, 7));
     });
   }
+
   return projects.filter((project) => !isAfter(parseISO(project.issueDate), subDays(now, 30)));
 }
 
-function buildMarketNote(trade: string, projects: PermitProject[]): string {
-  if (!trade) {
-    return 'Pick a trade to turn the permit stream into a more useful daily briefing.';
+function labelForTimeframe(timeframe: TimeframeKey): string {
+  if (timeframe === 'new') return 'last 7 days';
+  if (timeframe === 'active') return 'past month';
+  return 'older permits';
+}
+
+function timeframeSummary(timeframe: TimeframeKey): string {
+  if (timeframe === 'new') return 'last 7 days';
+  if (timeframe === 'active') return '8 to 30 days old';
+  return '30+ days old';
+}
+
+function resolveTimeframeProjects(projects: PermitProject[], requested: TimeframeKey): TimeframeResolution {
+  const order: TimeframeKey[] = requested === 'new' ? ['new', 'active', 'older'] : requested === 'active' ? ['active', 'older'] : ['older'];
+
+  for (const timeframe of order) {
+    const results = projectsForTimeframe(projects, timeframe);
+    if (!results.length) continue;
+
+    if (timeframe === requested) {
+      return { requested, displayed: timeframe, projects: results, message: null };
+    }
+
+    if (requested === 'new' && timeframe === 'active') {
+      return {
+        requested,
+        displayed: timeframe,
+        projects: results,
+        message: 'No new permits in the last 7 days. Showing recent activity.'
+      };
+    }
+
+    if (requested === 'new' && timeframe === 'older') {
+      return {
+        requested,
+        displayed: timeframe,
+        projects: results,
+        message: 'No new or recent permits in the last 30 days. Showing older activity.'
+      };
+    }
+
+    if (requested === 'active' && timeframe === 'older') {
+      return {
+        requested,
+        displayed: timeframe,
+        projects: results,
+        message: 'No recent permits from the past month. Showing older activity.'
+      };
+    }
   }
 
-  if (!projects.length) {
-    return `${trade} work is quiet in the current filter set. Widen the budget or timeframe if you want a broader look.`;
-  }
+  return { requested, displayed: requested, projects: [], message: null };
+}
+
+function buildMarketNote(trade: string, projects: PermitProject[]): string {
+  if (!trade) return 'Choose your trade and we’ll tune the brief around the permits most worth your time.';
+  if (!projects.length) return `${trade} activity is quiet in the current filter set.`;
 
   const latestWeek = projects.filter((project) => isAfter(parseISO(project.issueDate), subDays(new Date(), 7)));
-  const descriptors = latestWeek.length ? latestWeek : projects.slice(0, 12);
-  const text = descriptors
-    .map((project) => `${project.permitSubtype} ${project.readableSummary}`.toLowerCase())
-    .join(' ');
-
-  const mentionsRestaurant = text.includes('restaurant');
-  const mentionsInterior = text.includes('interior') || text.includes('tenant finish') || text.includes('build-out');
-  const mentionsMedical = text.includes('medical');
-  const mentionsRetail = text.includes('retail');
+  const descriptors = latestWeek.length ? latestWeek : projects.slice(0, 10);
+  const text = descriptors.map((project) => `${project.permitSubtype} ${project.readableSummary}`.toLowerCase()).join(' ');
 
   const phrases: string[] = [];
   phrases.push(`${trade} activity is ${latestWeek.length >= 4 ? 'busy' : latestWeek.length >= 2 ? 'steady' : 'light'} this week.`);
-  if (mentionsRestaurant) phrases.push('Restaurant work is showing up.');
-  if (mentionsInterior) phrases.push('Interior build-outs are carrying a lot of the volume.');
-  if (mentionsMedical) phrases.push('A few medical jobs are mixed in.');
-  if (mentionsRetail) phrases.push('Retail work is still part of the mix.');
-  phrases.push(`${projects.slice(0, 8).filter((project) => projectMatchesTrade(project, trade)).length} permits look worth a call.`);
+  if (text.includes('restaurant')) phrases.push('Restaurant work is still showing up.');
+  if (text.includes('interior') || text.includes('tenant finish') || text.includes('build-out')) phrases.push('Interior build-outs are carrying a lot of the volume.');
+  if (text.includes('medical')) phrases.push('A few medical jobs are mixed in.');
+  phrases.push(`${Math.min(projects.length, 8)} permits look worth a call.`);
 
   return phrases.join(' ');
 }
 
-export function DashboardShell({ initialPayload }: Props) {
-  const [activeTab, setActiveTab] = useState<TabKey>('home');
+export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
   const [filters, setFilters] = useState<DashboardFilters>(initialPayload.filters);
   const [payload, setPayload] = useState<DashboardPayload>(initialPayload);
   const [isLoading, setIsLoading] = useState(false);
   const [feedMode, setFeedMode] = useState<FeedMode>('my-trade');
-  const [timeframe, setTimeframe] = useState<TimeframeKey>('new');
-  const [opportunitiesView, setOpportunitiesView] = useState<'feed' | 'map'>('feed');
+  const [requestedTimeframe, setRequestedTimeframe] = useState<TimeframeKey>('new');
+  const [jobsView, setJobsView] = useState<'feed' | 'map'>('feed');
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [profile, setProfile] = useState<UserProfile>(() => getInitialProfile(initialPayload));
-  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(true);
   const [onboardingReady, setOnboardingReady] = useState(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
@@ -204,8 +257,7 @@ export function DashboardShell({ initialPayload }: Props) {
       }));
     }
 
-    const onboardingComplete = window.localStorage.getItem(ONBOARDING_KEY) === 'true';
-    setShowOnboarding(!onboardingComplete);
+    setShowOnboarding(true);
     setOnboardingReady(true);
   }, [initialPayload]);
 
@@ -241,24 +293,32 @@ export function DashboardShell({ initialPayload }: Props) {
   }, [requestFilters]);
 
   const baseProjects = useMemo(() => {
-    if (feedMode === 'my-trade' && profile.trade) {
-      return projectViewForMode(payload.projects, 'my-trade', profile.trade);
-    }
-    if (feedMode === 'my-trade' && !profile.trade) {
-      return [];
-    }
+    if (feedMode === 'my-trade' && profile.trade) return projectViewForMode(payload.projects, 'my-trade', profile.trade);
+    if (feedMode === 'my-trade' && !profile.trade) return [];
     return payload.projects;
   }, [feedMode, payload.projects, profile.trade]);
 
-  const visibleProjects = useMemo(() => getProjectsForTimeframe(baseProjects, timeframe), [baseProjects, timeframe]);
+  const timeframeState = useMemo(() => resolveTimeframeProjects(baseProjects, requestedTimeframe), [baseProjects, requestedTimeframe]);
+  const visibleProjects = timeframeState.projects;
   const visibleContacts = useMemo(() => aggregateContacts(baseProjects), [baseProjects]);
   const newThisWeekCount = useMemo(
     () => baseProjects.filter((project) => isAfter(parseISO(project.issueDate), subDays(new Date(), 7))).length,
     [baseProjects]
   );
   const dashboardPreviewContacts = visibleContacts.slice(0, 3);
-  const dashboardPreviewProjects = baseProjects.slice(0, 3);
+  const dashboardPreviewProjects = visibleProjects.slice(0, 3);
   const marketNote = buildMarketNote(profile.trade, baseProjects);
+  const jobsSummary = useMemo(() => {
+    if (!profile.trade) {
+      return `${visibleProjects.length} permits in the ${timeframeSummary(timeframeState.displayed)} view.`;
+    }
+
+    if (!visibleProjects.length) {
+      return `No ${profile.trade.toLowerCase()} permits in this view right now.`;
+    }
+
+    return `${visibleProjects.length} ${profile.trade.toLowerCase()} permits in the ${timeframeSummary(timeframeState.displayed)} view.`;
+  }, [profile.trade, timeframeState.displayed, visibleProjects.length]);
 
   function updateProfile<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
     setProfile((current) => ({ ...current, [key]: value }));
@@ -288,7 +348,7 @@ export function DashboardShell({ initialPayload }: Props) {
   return (
     <>
       <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 pb-28 pt-5 sm:px-6">
-        <header className="rounded-[28px] border border-white/70 bg-white/72 px-4 py-4 shadow-[0_24px_80px_rgba(43,37,20,0.12)] backdrop-blur sm:px-6">
+        <header className="rounded-[28px] border border-white/45 bg-white/74 px-4 py-4 shadow-[0_24px_80px_rgba(43,37,20,0.12)] backdrop-blur-xl sm:px-6">
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-500">Nashville Build Insider</p>
@@ -304,10 +364,8 @@ export function DashboardShell({ initialPayload }: Props) {
         <div key={activeTab} className="mt-5 animate-[fade_up_220ms_ease]">
           {activeTab === 'home' ? (
             <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/70 bg-white/88 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">
-                  {profile.trade ? `${profile.trade} briefing` : 'Market briefing'}
-                </div>
+              <div className="rounded-[28px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-500">{profile.trade ? `${profile.trade} briefing` : 'Market briefing'}</div>
                 <h2 className="mt-2 font-display text-3xl leading-tight text-stone-950">
                   {profile.trade ? `Here’s how ${profile.trade.toLowerCase()} work looks right now.` : 'Choose a trade to personalize the brief.'}
                 </h2>
@@ -323,23 +381,13 @@ export function DashboardShell({ initialPayload }: Props) {
                   <div className="text-[11px] uppercase tracking-[0.18em] text-amber-900/70">New this week</div>
                   <div className="mt-2 text-3xl font-semibold">{newThisWeekCount}</div>
                 </div>
-                <div className="rounded-[24px] border border-stone-200 bg-white/90 px-4 py-4">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-stone-500">Total valuation</div>
-                  <div className="mt-2 text-xl font-semibold text-stone-950">
-                    {formatCurrency(baseProjects.reduce((sum, project) => sum + project.valuation, 0))}
-                  </div>
-                </div>
-                <div className="rounded-[24px] border border-stone-200 bg-white/90 px-4 py-4">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-stone-500">Active contacts</div>
-                  <div className="mt-2 text-xl font-semibold text-stone-950">{visibleContacts.length}</div>
-                </div>
               </div>
 
-              <div className="rounded-[28px] border border-white/70 bg-white/88 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur">
+              <div className="rounded-[28px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h3 className="font-display text-2xl text-stone-950">Worth a quick look</h3>
-                    <p className="mt-1 text-sm text-stone-600">A few names and permits to anchor the day.</p>
+                    <p className="mt-1 text-sm text-stone-600">A few permits and builders to check first.</p>
                   </div>
                   <button onClick={() => setActiveTab('jobs')} className="rounded-full border border-stone-300 px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-stone-700 active:scale-[0.98]">
                     Open Jobs
@@ -348,7 +396,7 @@ export function DashboardShell({ initialPayload }: Props) {
 
                 <div className="mt-4 grid gap-3">
                   {dashboardPreviewProjects.map((project) => (
-                    <Link key={project.id} href={`/projects/${project.id}`} className="rounded-2xl border border-stone-200 bg-stone-50 px-4 py-4 transition hover:border-amber-300">
+                    <Link key={project.id} href={`/projects/${project.id}`} className="rounded-2xl border border-stone-200 bg-stone-50/90 px-4 py-4 transition hover:border-amber-300 active:scale-[0.99]">
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <div className="text-sm font-semibold text-stone-950">{project.address || 'Address pending'}</div>
@@ -358,14 +406,13 @@ export function DashboardShell({ initialPayload }: Props) {
                       </div>
                     </Link>
                   ))}
-                  {!dashboardPreviewProjects.length ? <p className="text-sm text-stone-500">No matching permits in the current view.</p> : null}
                 </div>
 
                 <div className="mt-5 border-t border-stone-100 pt-5">
-                  <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-stone-500">Top contractors</h4>
+                  <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-stone-500">Top builders</h4>
                   <div className="mt-3 grid gap-3">
                     {dashboardPreviewContacts.map((contact) => (
-                      <a key={contact.name} href={`/contacts?name=${encodeURIComponent(contact.name)}&${contactContextQuery}`} className="flex items-center justify-between rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 transition hover:border-amber-300">
+                      <a key={contact.name} href={`/contacts?name=${encodeURIComponent(contact.name)}&${contactContextQuery}`} className="flex items-center justify-between rounded-2xl border border-stone-200 bg-stone-50/90 px-4 py-3 transition hover:border-amber-300 active:scale-[0.99]">
                         <div>
                           <div className="text-sm font-semibold text-stone-950">{contact.name}</div>
                           <div className="mt-1 text-sm text-stone-600">
@@ -375,7 +422,6 @@ export function DashboardShell({ initialPayload }: Props) {
                         <div className="text-xs uppercase tracking-[0.16em] text-stone-500">Open</div>
                       </a>
                     ))}
-                    {!dashboardPreviewContacts.length ? <p className="text-sm text-stone-500">No contact activity to preview yet.</p> : null}
                   </div>
                 </div>
               </div>
@@ -384,12 +430,16 @@ export function DashboardShell({ initialPayload }: Props) {
 
           {activeTab === 'jobs' ? (
             <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/70 bg-white/88 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur">
+              <div className="rounded-[28px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <h2 className="font-display text-3xl text-stone-950">Jobs</h2>
-                    <p className="mt-1 text-sm text-stone-600">Choose your view, then get straight into the feed.</p>
+                    <p className="mt-1 text-sm text-stone-600">{jobsSummary}</p>
                   </div>
+                  <div className="text-xs uppercase tracking-[0.16em] text-stone-500">{isLoading ? 'Refreshing' : `${labelForTimeframe(timeframeState.displayed)}`}</div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-3">
                   <div className="inline-flex rounded-full border border-stone-200 bg-stone-100 p-1 text-sm font-semibold">
                     <button onClick={() => setFeedMode('my-trade')} className={clsx('rounded-full px-4 py-2 transition active:scale-[0.98]', feedMode === 'my-trade' ? 'bg-stone-950 text-white' : 'text-stone-700')}>
                       My Trade
@@ -398,14 +448,12 @@ export function DashboardShell({ initialPayload }: Props) {
                       All Jobs
                     </button>
                   </div>
-                </div>
 
-                <div className="mt-4 flex flex-wrap gap-3">
                   <div className="inline-flex rounded-full border border-stone-200 bg-stone-100 p-1 text-sm font-semibold">
-                    <button onClick={() => setOpportunitiesView('feed')} className={clsx('rounded-full px-4 py-2 transition active:scale-[0.98]', opportunitiesView === 'feed' ? 'bg-stone-950 text-white shadow-[0_10px_24px_rgba(28,25,23,0.16)]' : 'text-stone-700')}>
+                    <button onClick={() => setJobsView('feed')} className={clsx('rounded-full px-4 py-2 transition active:scale-[0.98]', jobsView === 'feed' ? 'bg-stone-950 text-white shadow-[0_10px_24px_rgba(28,25,23,0.16)]' : 'text-stone-700')}>
                       Feed
                     </button>
-                    <button onClick={() => setOpportunitiesView('map')} className={clsx('rounded-full px-4 py-2 transition active:scale-[0.98]', opportunitiesView === 'map' ? 'bg-stone-950 text-white shadow-[0_10px_24px_rgba(28,25,23,0.16)]' : 'text-stone-700')}>
+                    <button onClick={() => setJobsView('map')} className={clsx('rounded-full px-4 py-2 transition active:scale-[0.98]', jobsView === 'map' ? 'bg-stone-950 text-white shadow-[0_10px_24px_rgba(28,25,23,0.16)]' : 'text-stone-700')}>
                       Map
                     </button>
                   </div>
@@ -415,28 +463,21 @@ export function DashboardShell({ initialPayload }: Props) {
                   {(['new', 'active', 'older'] as TimeframeKey[]).map((key) => (
                     <button
                       key={key}
-                      onClick={() => setTimeframe(key)}
-                      className={clsx(
-                        'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
-                        timeframe === key ? 'bg-stone-950 text-white' : 'border border-stone-300 bg-white text-stone-700'
-                      )}
+                      onClick={() => {
+                        setRequestedTimeframe(key);
+                        setExpandedJobId(null);
+                      }}
+                      className={clsx('rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]', requestedTimeframe === key ? 'bg-stone-950 text-white' : 'border border-stone-300 bg-white text-stone-700')}
                     >
                       {key === 'new' ? 'New' : key === 'active' ? 'Active' : 'Older'}
                     </button>
                   ))}
                 </div>
 
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                  <div className="text-xs uppercase tracking-[0.16em] text-stone-500">
-                    {isLoading ? 'Refreshing' : `${visibleProjects.length} visible permits`}
-                  </div>
-                  <div className="text-xs uppercase tracking-[0.16em] text-stone-500">
-                    {opportunitiesView === 'map' ? 'Map view' : 'Feed view'}
-                  </div>
-                </div>
+                {timeframeState.message ? <div className="mt-4 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-900">{timeframeState.message}</div> : null}
               </div>
 
-              <details className="group rounded-[24px] border border-white/70 bg-white/82 p-4 shadow-[0_18px_60px_rgba(43,37,20,0.06)] backdrop-blur">
+              <details className="group rounded-[24px] border border-white/45 bg-white/82 p-4 shadow-[0_18px_60px_rgba(43,37,20,0.06)] backdrop-blur-xl">
                 <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold text-stone-800">
                   <span>Refine</span>
                   <span className="text-xs uppercase tracking-[0.16em] text-stone-500 group-open:hidden">Open</span>
@@ -472,16 +513,23 @@ export function DashboardShell({ initialPayload }: Props) {
               </details>
 
               <div className="relative">
-                <div className={clsx('transition duration-300', opportunitiesView === 'map' ? 'pointer-events-none opacity-0 translate-y-2 absolute inset-0' : 'opacity-100')}>
+                <div className={clsx('transition duration-200', jobsView === 'map' ? 'pointer-events-none absolute inset-0 translate-y-2 opacity-0' : 'opacity-100')}>
                   <div className="space-y-4">
                     {visibleProjects.map((project) => (
-                      <PermitFeedCard key={project.id} project={project} trade={profile.trade} contactHref={`/contacts?name=${encodeURIComponent(project.contactName)}&${contactContextQuery}`} />
+                      <PermitFeedCard
+                        key={project.id}
+                        project={project}
+                        trade={profile.trade}
+                        contactHref={`/contacts?name=${encodeURIComponent(project.contactName)}&${contactContextQuery}`}
+                        expanded={expandedJobId === project.id}
+                        onToggle={() => setExpandedJobId((current) => (current === project.id ? null : project.id))}
+                      />
                     ))}
                     {!visibleProjects.length ? <div className="rounded-[24px] border border-dashed border-stone-300 bg-white/70 px-5 py-12 text-center text-sm text-stone-500">No permits match the current view.</div> : null}
                   </div>
                 </div>
 
-                <div className={clsx('transition duration-300', opportunitiesView === 'map' ? 'opacity-100 translate-y-0' : 'pointer-events-none absolute inset-0 opacity-0 -translate-y-2')}>
+                <div className={clsx('transition duration-200', jobsView === 'map' ? 'opacity-100' : 'pointer-events-none absolute inset-0 -translate-y-2 opacity-0')}>
                   <ProjectMap projects={visibleProjects} trade={profile.trade} />
                 </div>
               </div>
@@ -490,14 +538,14 @@ export function DashboardShell({ initialPayload }: Props) {
 
           {activeTab === 'builders' ? (
             <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/70 bg-white/88 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur">
+              <div className="rounded-[28px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
                 <h2 className="font-display text-3xl text-stone-950">Builders</h2>
-                <p className="mt-1 text-sm text-stone-600">Contact actions first, with project count and valuation for context.</p>
+                <p className="mt-1 text-sm text-stone-600">Call and email actions first, with project count and valuation for context.</p>
               </div>
 
               <div className="space-y-4">
                 {visibleContacts.map((contact) => (
-                  <article key={contact.name} className="rounded-[24px] border border-white/70 bg-white/88 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur">
+                  <article key={contact.name} className="rounded-[24px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <h3 className="text-xl font-semibold text-stone-950">{contact.name}</h3>
@@ -519,14 +567,13 @@ export function DashboardShell({ initialPayload }: Props) {
                     </div>
                   </article>
                 ))}
-                {!visibleContacts.length ? <div className="rounded-[24px] border border-dashed border-stone-300 bg-white/70 px-5 py-12 text-center text-sm text-stone-500">No contractor records match the current view.</div> : null}
               </div>
             </section>
           ) : null}
 
           {activeTab === 'profile' ? (
             <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/70 bg-white/88 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur">
+              <div className="rounded-[28px] border border-white/45 bg-white/84 p-5 shadow-[0_18px_60px_rgba(43,37,20,0.08)] backdrop-blur-xl">
                 <h2 className="font-display text-3xl text-stone-950">Profile</h2>
                 <p className="mt-1 text-sm text-stone-600">Local-only profile fields for shaping the app while auth is still out of scope.</p>
 
@@ -584,7 +631,7 @@ export function DashboardShell({ initialPayload }: Props) {
                       setFeedMode(profile.defaultFeedMode);
                       applyProfileBudget();
                     }}
-                    className="rounded-full bg-stone-950 px-4 py-2 text-sm font-semibold text-white"
+                    className="rounded-full bg-stone-950 px-4 py-2 text-sm font-semibold text-white active:scale-[0.98]"
                   >
                     Apply to app
                   </button>
@@ -640,7 +687,7 @@ export function DashboardShell({ initialPayload }: Props) {
                   ))}
                 </div>
                 {onboardingIndex < ONBOARDING_CARDS.length - 1 ? (
-                  <button onClick={advanceOnboarding} className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-900">
+                  <button onClick={advanceOnboarding} className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-900 active:scale-[0.98]">
                     Next
                   </button>
                 ) : null}
@@ -662,7 +709,7 @@ export function DashboardShell({ initialPayload }: Props) {
                   onClick={completeOnboarding}
                   disabled={!profile.trade || onboardingIndex < ONBOARDING_CARDS.length - 1}
                   className={clsx(
-                    'mt-4 w-full rounded-full px-4 py-3 text-sm font-semibold transition',
+                    'mt-4 w-full rounded-full px-4 py-3 text-sm font-semibold transition active:scale-[0.98]',
                     profile.trade && onboardingIndex === ONBOARDING_CARDS.length - 1 ? 'bg-amber-300 text-stone-900' : 'bg-white/15 text-white/45'
                   )}
                 >

@@ -262,16 +262,28 @@ function cleanPurposeText(value: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 
-  return toSentenceCase(tightened).replace(/\s+$/, '');
+  const parts = tightened
+    .split(/(?<=[.?!])\s+|;\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const deduped = parts.filter((part) => {
+    const key = part.toLowerCase().replace(/[^\w]+/g, ' ').trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return toSentenceCase(deduped.join(' ').replace(/\s+$/, ''));
 }
 
 function buildReadableSummary(permitSubtype: string, cleanedPurpose: string): string {
   if (!cleanedPurpose) return permitSubtype || 'Commercial permit activity in motion.';
 
   const firstSentence = cleanedPurpose.split(/(?<=[.?!])\s+/)[0]?.trim() || cleanedPurpose;
-  if (firstSentence.length <= 150) return firstSentence;
+  if (firstSentence.length <= 120) return firstSentence;
 
-  return `${firstSentence.slice(0, 147).trimEnd()}...`;
+  return `${firstSentence.slice(0, 117).trimEnd()}...`;
 }
 
 function deriveNotes(permitType: string, permitSubtype: string, purpose: string): { whyItMatters: string; likelyTrades: string[] } {

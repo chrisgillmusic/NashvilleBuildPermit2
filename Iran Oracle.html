@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>The Iran War Oracle</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg-top: #070913;
+        --bg-bottom: #130f1f;
+        --panel: rgba(16, 19, 34, 0.78);
+        --panel-border: rgba(157, 201, 255, 0.16);
+        --text: #f3f5ff;
+        --muted: #b8bfd9;
+        --accent: #89c8ff;
+        --ball-core: rgba(152, 219, 255, 0.3);
+        --shadow: rgba(0, 0, 0, 0.45);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        height: 100vh;
+        overflow: hidden;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top, rgba(115, 69, 171, 0.22), transparent 30%),
+          radial-gradient(circle at 20% 20%, rgba(93, 130, 255, 0.18), transparent 22%),
+          linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          radial-gradient(circle at 15% 30%, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px),
+          radial-gradient(circle at 70% 20%, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px),
+          radial-gradient(circle at 40% 80%, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px),
+          radial-gradient(circle at 85% 60%, rgba(255, 255, 255, 0.08) 0 1px, transparent 1px);
+      }
+
+      .oracle-app {
+        min-height: 100vh;
+        height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 16px;
+      }
+
+      .oracle-panel {
+        width: min(100%, 720px);
+        padding: 24px 22px 22px;
+        text-align: center;
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        border-radius: 28px;
+        box-shadow: 0 30px 80px var(--shadow);
+        backdrop-filter: blur(14px);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 5vw, 3.6rem);
+        line-height: 0.96;
+        letter-spacing: 0.05em;
+      }
+
+      .subtitle {
+        margin: 14px auto 0;
+        max-width: 30rem;
+        font-size: clamp(1rem, 2.5vw, 1.1rem);
+        color: var(--muted);
+      }
+
+      .crystal-wrap {
+        display: flex;
+        justify-content: center;
+        margin: 20px 0 18px;
+      }
+
+      .crystal-ball {
+        position: relative;
+        width: min(54vw, 260px);
+        aspect-ratio: 1;
+        border-radius: 50%;
+        background:
+          radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.7), transparent 18%),
+          radial-gradient(circle at 50% 55%, rgba(116, 199, 255, 0.38), transparent 42%),
+          radial-gradient(circle at 50% 50%, rgba(72, 50, 132, 0.88), rgba(17, 20, 39, 0.98) 72%);
+        border: 1px solid rgba(206, 229, 255, 0.18);
+        box-shadow:
+          0 0 40px rgba(132, 196, 255, 0.18),
+          0 0 90px rgba(184, 96, 255, 0.14),
+          inset 0 -30px 40px rgba(0, 0, 0, 0.3),
+          inset 0 18px 35px rgba(255, 255, 255, 0.05);
+        display: grid;
+        place-items: center;
+        animation: orbIdle 4.8s ease-in-out infinite;
+      }
+
+      .crystal-core,
+      .crystal-sheen {
+        position: absolute;
+        border-radius: 50%;
+      }
+
+      .crystal-core {
+        width: 56%;
+        height: 56%;
+        background: radial-gradient(circle, var(--ball-core), transparent 70%);
+        filter: blur(8px);
+        animation: idlePulse 4s ease-in-out infinite;
+      }
+
+      .crystal-sheen {
+        width: 76%;
+        height: 76%;
+        border-top: 1px solid rgba(255, 255, 255, 0.28);
+        border-left: 1px solid rgba(255, 255, 255, 0.18);
+        transform: rotate(-24deg) translate(-12%, -10%);
+        opacity: 0.7;
+      }
+
+      .oracle-button {
+        appearance: none;
+        border: 0;
+        border-radius: 999px;
+        padding: 15px 28px;
+        font: inherit;
+        font-size: 0.96rem;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: #f9fbff;
+        background: linear-gradient(135deg, #5986ff, #a55eff);
+        box-shadow: 0 12px 28px rgba(126, 111, 255, 0.28);
+        cursor: pointer;
+        transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+      }
+
+      .oracle-button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 16px 32px rgba(126, 111, 255, 0.34);
+        filter: brightness(1.06);
+      }
+
+      .oracle-button:active {
+        transform: translateY(1px) scale(0.99);
+      }
+
+      .oracle-button:focus-visible {
+        outline: 2px solid rgba(201, 133, 255, 0.9);
+        outline-offset: 4px;
+      }
+
+      .answer-panel {
+        margin-top: 18px;
+        padding: 14px 16px 2px;
+      }
+
+      .answer-label {
+        margin: 0 0 14px;
+        font-size: 0.88rem;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+
+      .answer {
+        min-height: 4.8rem;
+        margin: 0;
+        font-size: clamp(1.35rem, 3.8vw, 1.9rem);
+        line-height: 1.45;
+        color: #fbfcff;
+        text-wrap: balance;
+        text-shadow: 0 0 18px rgba(130, 184, 255, 0.12);
+      }
+
+      .answer.revealing {
+        animation: answerReveal 420ms ease;
+      }
+
+      .crystal-ball.is-active {
+        animation: oracleShake 520ms ease, oracleGlow 700ms ease;
+      }
+
+      @keyframes idlePulse {
+        0%,
+        100% {
+          transform: scale(0.95);
+          opacity: 0.7;
+        }
+        50% {
+          transform: scale(1.08);
+          opacity: 1;
+        }
+      }
+
+      @keyframes orbIdle {
+        0%,
+        100% {
+          transform: scale(1);
+          box-shadow:
+            0 0 40px rgba(132, 196, 255, 0.18),
+            0 0 90px rgba(184, 96, 255, 0.14),
+            inset 0 -30px 40px rgba(0, 0, 0, 0.3),
+            inset 0 18px 35px rgba(255, 255, 255, 0.05);
+        }
+        50% {
+          transform: scale(1.012);
+          box-shadow:
+            0 0 52px rgba(132, 196, 255, 0.25),
+            0 0 104px rgba(184, 96, 255, 0.18),
+            inset 0 -30px 40px rgba(0, 0, 0, 0.28),
+            inset 0 18px 35px rgba(255, 255, 255, 0.06);
+        }
+      }
+
+      @keyframes oracleGlow {
+        0% {
+          box-shadow:
+            0 0 40px rgba(132, 196, 255, 0.18),
+            0 0 90px rgba(184, 96, 255, 0.14),
+            inset 0 -30px 40px rgba(0, 0, 0, 0.3),
+            inset 0 18px 35px rgba(255, 255, 255, 0.05);
+        }
+        50% {
+          box-shadow:
+            0 0 50px rgba(140, 219, 255, 0.48),
+            0 0 120px rgba(203, 132, 255, 0.34),
+            inset 0 -30px 40px rgba(0, 0, 0, 0.28),
+            inset 0 18px 35px rgba(255, 255, 255, 0.08);
+        }
+        100% {
+          box-shadow:
+            0 0 40px rgba(132, 196, 255, 0.18),
+            0 0 90px rgba(184, 96, 255, 0.14),
+            inset 0 -30px 40px rgba(0, 0, 0, 0.3),
+            inset 0 18px 35px rgba(255, 255, 255, 0.05);
+        }
+      }
+
+      @keyframes oracleShake {
+        0%,
+        100% {
+          transform: translateX(0);
+        }
+        20% {
+          transform: translateX(-4px) rotate(-1deg);
+        }
+        40% {
+          transform: translateX(4px) rotate(1deg);
+        }
+        60% {
+          transform: translateX(-3px) rotate(-0.5deg);
+        }
+        80% {
+          transform: translateX(3px) rotate(0.5deg);
+        }
+      }
+
+      @keyframes answerReveal {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @media (max-width: 600px) {
+        .oracle-app {
+          place-items: start center;
+          align-content: start;
+          padding: 8px 16px 12px;
+        }
+
+        .oracle-panel {
+          padding: 20px 16px 18px;
+          border-radius: 24px;
+        }
+
+        .crystal-ball {
+          width: min(68vw, 220px);
+        }
+
+        .answer {
+          min-height: 4.9rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="oracle-app">
+      <section class="oracle-panel" aria-labelledby="app-title">
+        <h1 id="app-title">REASON TO BOMB IRAN ORACLE</h1>
+
+        <div class="crystal-wrap">
+          <div class="crystal-ball" id="crystalBall" aria-hidden="true">
+            <div class="crystal-core"></div>
+            <div class="crystal-sheen"></div>
+          </div>
+        </div>
+
+        <button class="oracle-button" id="askButton" type="button">
+          ASK THE ORACLE
+        </button>
+
+        <section class="answer-panel" aria-live="polite" aria-atomic="true">
+          <p class="answer-label">TODAY'S REASON TO BOMB IRAN</p>
+          <p class="answer" id="oracleAnswer">The vision awaits.</p>
+        </section>
+      </section>
+    </main>
+    <script>
+      const ORACLE_VISIONS = [
+        "I foresee… an Imminent Nuclear Threat.",
+        "The mist reveals… Destroying Iran’s Missile Arsenal.",
+        "The spirits whisper… Degrading Proxy Militias.",
+        "The crystal trembles… Protecting U.S. Forces.",
+        "The orb glows… Supporting Our Allies.",
+        "The mists part… Restoring Regional Stability.",
+        "The cards insist… Exhausted Diplomacy.",
+        "The veil lifts… Freedom of Maritime Navigation.",
+        "The prophecy murmurs… National Security Interests.",
+        "The fog thickens… Deterrence.",
+        "The stars align… Preventing Future Nuclear Weapons.",
+        "The oracle sighs… Defense of Allies.",
+        "The mist suggests… Talks May Still Be Possible.",
+        "The crystal hums… No Deal Except Unconditional Surrender.",
+        "The future hints… A Limited Operation.",
+        "The stars wobble… We Are Still Assessing.",
+        "The orb flickers… The War Will End Soon.",
+        "The crystal ball shrugs… Let’s See What Happens.",
+        "The orb foresees… A Better News Cycle.",
+        "The crystal sighs… Daddy Issues.",
+        "The spirits cackle… Just for the f*ck of it."
+      ];
+
+      const crystalBall = document.getElementById("crystalBall");
+      const askButton = document.getElementById("askButton");
+      const oracleAnswer = document.getElementById("oracleAnswer");
+
+      let lastVision = "";
+      let revealTimer = null;
+
+      function getRandomItem(items, previousItem = "") {
+        if (items.length <= 1) {
+          return items[0];
+        }
+
+        let nextItem = items[Math.floor(Math.random() * items.length)];
+
+        while (nextItem === previousItem) {
+          nextItem = items[Math.floor(Math.random() * items.length)];
+        }
+
+        return nextItem;
+      }
+
+      function revealVision() {
+        const nextVision = getRandomItem(ORACLE_VISIONS, lastVision);
+        lastVision = nextVision;
+
+        oracleAnswer.classList.remove("revealing");
+        void oracleAnswer.offsetWidth;
+        oracleAnswer.textContent = nextVision;
+        oracleAnswer.classList.add("revealing");
+      }
+
+      askButton.addEventListener("click", () => {
+        window.clearTimeout(revealTimer);
+
+        crystalBall.classList.remove("is-active");
+        void crystalBall.offsetWidth;
+        crystalBall.classList.add("is-active");
+
+        oracleAnswer.classList.remove("revealing");
+        oracleAnswer.textContent = "Consulting the fog...";
+
+        revealTimer = window.setTimeout(revealVision, 520);
+      });
+
+      crystalBall.addEventListener("animationend", () => {
+        crystalBall.classList.remove("is-active");
+      });
+    </script>
+  </body>
+</html>
