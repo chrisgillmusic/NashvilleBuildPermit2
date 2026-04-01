@@ -26,6 +26,8 @@ const CACHE_TTL_MS = 1000 * 60 * 10;
 const OBJECT_ID_CHUNK = 200;
 const REQUEST_RETRIES = 4;
 const CONCURRENCY = 6;
+const SUMMARY_BATCH_SIZE = 5;
+const SUMMARY_BATCH_CONCURRENCY = 2;
 
 type ArcgisFeature = {
   attributes: Record<string, unknown>;
@@ -899,24 +901,40 @@ export async function testProjectAiInterpretation(id: string, trade = '') {
 
 export async function generateSummariesForProjects(ids: string[], _trade = '', options?: { bypassCache?: boolean }) {
   const { projects } = await loadProjects();
-  const uniqueIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean))).slice(0, 5);
+  const uniqueIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
   const selected = uniqueIds
     .map((id) => projects.find((project) => project.id === id) || null)
     .filter((project): project is PermitProject => Boolean(project));
 
-  const results = await generateAndStoreBaseSummaries(selected.map((project) => buildBaseSummaryInput(project)), {
-    bypassCache: options?.bypassCache ?? false,
-    concurrency: 3
-  });
+  const results: Array<{ id: string; summarySource: 'ai' | 'fallback'; cacheStatus: string; failureReason: string; stored: boolean }> = [];
+  for (const selectedChunk of chunk(selected, SUMMARY_BATCH_SIZE)) {
+    const chunkResults = await generateAndStoreBaseSummaries(
+      selectedChunk.map((project) => buildBaseSummaryInput(project)),
+      {
+        bypassCache: options?.bypassCache ?? false,
+        concurrency: SUMMARY_BATCH_CONCURRENCY
+      }
+    );
+    results.push(...chunkResults);
+  }
 
   const refreshedProjects = await enrichProjects(selected, _trade);
   const storedAiCount = refreshedProjects.filter((project) => project.summarySource === 'ai').length;
   const needsSummaryCount = refreshedProjects.filter((project) => project.needsSummary).length;
   const needsTradeNoteCount = refreshedProjects.filter((project) => project.needsTradeNote).length;
+  const generatedCount = results.filter((result) => result.summarySource === 'ai').length;
+  const failedCount = results.filter((result) => result.summarySource !== 'ai').length;
 
   return {
     results,
     projects: refreshedProjects,
+    stats: {
+      requested: selected.length,
+      generated: generatedCount,
+      failed: failedCount,
+      batchSize: SUMMARY_BATCH_SIZE,
+      concurrency: SUMMARY_BATCH_CONCURRENCY
+    },
     debug: buildDebugPayload(
       refreshedProjects[0]?.summarySource || 'unknown',
       refreshedProjects[0]?.tradeSource || 'unknown',
@@ -924,7 +942,7 @@ export async function generateSummariesForProjects(ids: string[], _trade = '', o
         storedAiCount,
         needsSummaryCount,
         needsTradeNoteCount,
-        lastGenerateActionResult: `Generated summaries for ${results.filter((result) => result.summarySource === 'ai').length} of ${selected.length} jobs in this batch.`
+        lastGenerateActionResult: `Generated summaries for ${generatedCount} of ${selected.length} requested jobs. ${failedCount ? `${failedCount} failed and were left in fallback.` : 'No failures in this run.'}`
       }
     )
   };

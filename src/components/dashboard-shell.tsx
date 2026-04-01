@@ -42,7 +42,20 @@ type TimeframeResolution = {
 
 const PROFILE_KEY = 'nbi-profile-v1';
 const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 8 • OpenAI Request Fix';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 10 • Batch Fill';
+const VISIBLE_SUMMARY_CHUNK_SIZE = 5;
+
+type VisibleGenerationProgress = {
+  totalVisible: number;
+  storedBefore: number;
+  needed: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  batchIndex: number;
+  batchCount: number;
+  status: 'idle' | 'running' | 'complete' | 'failed';
+};
 
 const ONBOARDING_CARDS = [
   'Nashville Build Insider scans live permit data to surface real construction opportunities.',
@@ -227,6 +240,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [aiTestResult, setAiTestResult] = useState<string>('');
   const [dbWriteTestResult, setDbWriteTestResult] = useState<string>('');
   const [lastFailingStage, setLastFailingStage] = useState<string | null>(null);
+  const [visibleGenerationProgress, setVisibleGenerationProgress] = useState<VisibleGenerationProgress | null>(null);
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
 
   const deferredNeighborhood = useDeferredValue(filters.neighborhood);
@@ -320,6 +334,8 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const dashboardPreviewContacts = visibleContacts.slice(0, 3);
   const dashboardPreviewProjects = visibleProjects.slice(0, 3);
   const marketNote = buildMarketNote(profile.trade, baseProjects);
+  const visibleStoredCount = useMemo(() => visibleProjects.filter((project) => project.summarySource === 'ai').length, [visibleProjects]);
+  const visibleNeedsSummaryCount = useMemo(() => visibleProjects.filter((project) => project.needsSummary).length, [visibleProjects]);
   const jobsSummary = useMemo(() => {
     if (!profile.trade) {
       return `${visibleProjects.length} permits in ${labelForTimeframe(timeframeState.displayed)}.`;
@@ -530,37 +546,114 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       return;
     }
 
+    const idsNeedingSummary = visibleProjects.filter((project) => project.needsSummary).map((project) => project.id);
+    const storedBefore = visibleProjects.length - idsNeedingSummary.length;
+
+    if (!idsNeedingSummary.length) {
+      setVisibleGenerationProgress({
+        totalVisible: visibleProjects.length,
+        storedBefore,
+        needed: 0,
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        batchIndex: 0,
+        batchCount: 0,
+        status: 'complete'
+      });
+      setRegenerateStatus('All visible jobs already have stored summaries.');
+      return;
+    }
+
+    const batches = Array.from({ length: Math.ceil(idsNeedingSummary.length / VISIBLE_SUMMARY_CHUNK_SIZE) }, (_, index) =>
+      idsNeedingSummary.slice(index * VISIBLE_SUMMARY_CHUNK_SIZE, index * VISIBLE_SUMMARY_CHUNK_SIZE + VISIBLE_SUMMARY_CHUNK_SIZE)
+    );
+
     setIsGeneratingVisibleAi(true);
     setRegenerateStatus(null);
+    setVisibleGenerationProgress({
+      totalVisible: visibleProjects.length,
+      storedBefore,
+      needed: idsNeedingSummary.length,
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      batchIndex: 0,
+      batchCount: batches.length,
+      status: 'running'
+    });
 
     try {
-      const response = await fetch('/api/permits/generate-ai', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ids: visibleProjects.map((project) => project.id),
-          bypassCache: debugBypassCache
-        })
-      });
+      let generatedCount = 0;
+      let failedCount = 0;
+      let latestDebug: DashboardPayload['debug'] | null = null;
 
-      if (!response.ok) throw new Error('Failed to generate AI for visible jobs');
+      for (const [batchIndex, ids] of batches.entries()) {
+        const response = await fetch('/api/permits/generate-ai', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ids,
+            bypassCache: false
+          })
+        });
 
-      const result = (await response.json()) as {
-        results: Array<{ id: string; summarySource: 'ai' | 'fallback'; cacheStatus: string }>;
-        debug: DashboardPayload['debug'];
-      };
+        if (!response.ok) throw new Error(`Failed to generate AI for visible jobs in batch ${batchIndex + 1}`);
 
+        const result = (await response.json()) as {
+          results: Array<{ id: string; summarySource: 'ai' | 'fallback'; cacheStatus: string }>;
+          debug: DashboardPayload['debug'];
+        };
+
+        latestDebug = result.debug;
+        generatedCount += result.results.filter((entry) => entry.summarySource === 'ai').length;
+        failedCount += result.results.filter((entry) => entry.summarySource !== 'ai').length;
+
+        setVisibleGenerationProgress({
+          totalVisible: visibleProjects.length,
+          storedBefore,
+          needed: idsNeedingSummary.length,
+          processed: Math.min((batchIndex + 1) * VISIBLE_SUMMARY_CHUNK_SIZE, idsNeedingSummary.length),
+          succeeded: generatedCount,
+          failed: failedCount,
+          batchIndex: batchIndex + 1,
+          batchCount: batches.length,
+          status: 'running'
+        });
+      }
+
+      const overallMessage = `Stored summaries for ${generatedCount} of ${idsNeedingSummary.length} visible jobs.${failedCount ? ` ${failedCount} stayed on fallback.` : ''}`;
       const nextPayload = await refreshPayload();
       startTransition(() =>
         setPayload({
           ...nextPayload,
-          debug: result.debug
+          debug: {
+            ...(latestDebug || nextPayload.debug),
+            lastGenerateActionResult: overallMessage
+          }
         })
       );
-      setRegenerateStatus(
-        `Stored summaries for ${result.results.filter((entry) => entry.summarySource === 'ai').length} of ${result.results.length} visible jobs.`
-      );
+      setVisibleGenerationProgress({
+        totalVisible: visibleProjects.length,
+        storedBefore,
+        needed: idsNeedingSummary.length,
+        processed: idsNeedingSummary.length,
+        succeeded: generatedCount,
+        failed: failedCount,
+        batchIndex: batches.length,
+        batchCount: batches.length,
+        status: 'complete'
+      });
+      setRegenerateStatus(overallMessage);
     } catch (error) {
+      setVisibleGenerationProgress((current) =>
+        current
+          ? {
+              ...current,
+              status: 'failed'
+            }
+          : null
+      );
       setRegenerateStatus((error as Error).message);
     } finally {
       setIsGeneratingVisibleAi(false);
@@ -910,6 +1003,18 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       <div className="mt-1 font-semibold text-white">{payload.debug.storedAiCount}</div>
                     </div>
                     <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Visible jobs total</div>
+                      <div className="mt-1 font-semibold text-white">{visibleProjects.length}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Stored in visible view</div>
+                      <div className="mt-1 font-semibold text-white">{visibleStoredCount}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Still needed in visible view</div>
+                      <div className="mt-1 font-semibold text-white">{visibleNeedsSummaryCount}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Needs summaries</div>
                       <div className="mt-1 font-semibold text-white">{payload.debug.needsSummaryCount}</div>
                     </div>
@@ -1001,6 +1106,23 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                         {isGeneratingVisibleAi ? 'Generating summaries…' : 'Generate summaries for visible jobs'}
                       </button>
                     </div>
+                    {visibleGenerationProgress ? (
+                      <div className="mt-3 rounded-2xl bg-white/5 px-4 py-3 text-sm text-stone-200">
+                        <div>
+                          Visible set: {visibleGenerationProgress.totalVisible} jobs • {visibleGenerationProgress.storedBefore} already stored •{' '}
+                          {visibleGenerationProgress.needed} still needed
+                        </div>
+                        <div className="mt-1">
+                          Progress: {visibleGenerationProgress.processed} / {visibleGenerationProgress.needed} processed • {visibleGenerationProgress.succeeded} stored
+                          • {visibleGenerationProgress.failed} failed
+                        </div>
+                        <div className="mt-1">
+                          Batch: {visibleGenerationProgress.batchIndex} / {visibleGenerationProgress.batchCount || 0} • Status:{' '}
+                          {visibleGenerationProgress.status}
+                        </div>
+                        <div className="mt-2 text-xs text-stone-400">Base summaries fill in this action. Trade notes stay separate.</div>
+                      </div>
+                    ) : null}
                     {regenerateStatus ? <div className="mt-3 text-sm text-stone-300">{regenerateStatus}</div> : null}
                     {aiTestResult ? (
                       <pre className="mt-3 overflow-x-auto rounded-2xl bg-black/30 p-4 text-xs leading-6 text-stone-200">
