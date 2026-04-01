@@ -15,15 +15,10 @@ function formatPhoneHref(phone: string): string {
 }
 
 export function PermitFeedCard({ project, contactHref, trade, expanded, onToggle }: Props) {
-  const tradeNote = trade ? buildTradeRelevance(project, trade) : project.whyItMatters;
+  const tradeNote = trade ? buildTradeRelevance(project, trade) : '';
   const summaryText = project.readableSummary || 'No project summary listed on the permit.';
-  const showWhyItMatters = Boolean(project.whyItMatters && project.whyItMatters.toLowerCase() !== summaryText.toLowerCase());
-  const showTradeNote = Boolean(
-    trade &&
-      tradeNote &&
-      tradeNote.toLowerCase() !== project.whyItMatters.toLowerCase() &&
-      tradeNote.toLowerCase() !== summaryText.toLowerCase()
-  );
+  const normalizedSummary = summaryText.trim().toLowerCase();
+  const showTradeNote = Boolean(tradeNote && tradeNote.trim().toLowerCase() !== normalizedSummary);
   const detailHref = `/projects/${project.id}${trade ? `?trade=${encodeURIComponent(trade)}` : ''}`;
 
   return (
@@ -61,16 +56,9 @@ export function PermitFeedCard({ project, contactHref, trade, expanded, onToggle
 
         <div className={expanded ? 'mt-4 max-h-[420px] overflow-hidden opacity-100 transition-all duration-200' : 'max-h-0 overflow-hidden opacity-0 transition-all duration-200'}>
           <div className="space-y-4 rounded-2xl bg-white/5 px-4 py-4 ring-1 ring-white/10">
-            {showWhyItMatters ? (
-              <div>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400">Why it matters</div>
-                <p className="mt-2 text-sm leading-6 text-stone-100">{project.whyItMatters}</p>
-              </div>
-            ) : null}
-
             {showTradeNote ? (
               <div>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400">For your trade</div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400">Trade note</div>
                 <p className="mt-2 text-sm leading-6 text-stone-200">{tradeNote}</p>
               </div>
             ) : null}

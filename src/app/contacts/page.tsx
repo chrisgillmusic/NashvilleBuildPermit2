@@ -65,6 +65,7 @@ export default async function ContactPage({
               ) : null}
               {!leadPhone && !leadEmail ? <div className="rounded-full bg-white/10 px-4 py-2 text-stone-300">Contact info unavailable</div> : null}
             </div>
+            <p className="mt-3 text-xs text-stone-500">Where available, contact information is provided directly from permit records.</p>
           </div>
           <div className="grid grid-cols-2 gap-3 text-center text-sm sm:min-w-[250px]">
             <div className="rounded-2xl bg-black/40 px-4 py-4 text-white ring-1 ring-white/10">

@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { formatCurrency, formatPhone } from '@/lib/format';
 import { getProjectById } from '@/lib/permits/live';
+import { buildTradeRelevance } from '@/lib/permits/trade-utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +13,17 @@ function formatPhoneHref(phone: string): string {
 export default async function ProjectDetailPage({ params, searchParams }: { params: { id: string }; searchParams: { trade?: string } }) {
   const project = await getProjectById(params.id, searchParams.trade || '');
   if (!project) notFound();
-  const showWhyItMatters = project.whyItMatters.toLowerCase() !== project.readableSummary.toLowerCase();
+  const summaryText = project.readableSummary || project.purpose || 'No project summary listed on the permit.';
+  const tradeNote = searchParams.trade ? buildTradeRelevance(project, searchParams.trade) : '';
+  const normalizedSummary = summaryText.trim().toLowerCase();
+  const normalizedTradeNote = tradeNote.trim().toLowerCase();
+  const normalizedWhyItMatters = project.whyItMatters.trim().toLowerCase();
+  const showTradeNote = Boolean(normalizedTradeNote && normalizedTradeNote !== normalizedSummary);
+  const showWhyItMatters = Boolean(
+    project.whyItMatters &&
+      normalizedWhyItMatters !== normalizedSummary &&
+      (!normalizedTradeNote || normalizedWhyItMatters !== normalizedTradeNote)
+  );
   const showLikelyTrades = project.likelyTrades.length > 0 && project.likelyTrades.length <= 4;
 
   return (
@@ -30,7 +41,7 @@ export default async function ProjectDetailPage({ params, searchParams }: { para
               Permit {project.permitNumber} • {project.permitSubtype || project.permitType}
             </p>
             <p className="mt-1 text-xs font-medium uppercase tracking-[0.16em] text-stone-500">Project ID {project.id}</p>
-            <p className="mt-4 max-w-2xl text-sm leading-6 text-stone-100">{project.readableSummary || 'No project summary listed on the permit.'}</p>
+            <p className="mt-4 max-w-2xl text-sm leading-6 text-stone-100">{summaryText}</p>
             <div className="mt-4 flex flex-wrap gap-3 text-sm font-semibold">
               {project.contactPhone ? (
                 <a href={formatPhoneHref(project.contactPhone)} className="rounded-full bg-amber-400 px-4 py-2 text-stone-950 active:scale-[0.98]">
@@ -41,6 +52,7 @@ export default async function ProjectDetailPage({ params, searchParams }: { para
                 Open map
               </a>
             </div>
+            <p className="mt-3 text-xs text-stone-500">Where available, contact information is provided directly from permit records.</p>
           </div>
           <div className="rounded-2xl bg-black/40 px-4 py-3 text-white ring-1 ring-white/10">
             <div className="text-[11px] uppercase tracking-[0.2em] text-stone-400">Estimated value</div>
@@ -50,11 +62,13 @@ export default async function ProjectDetailPage({ params, searchParams }: { para
 
         <div className="mt-6 grid gap-4 sm:grid-cols-2">
           <div className="rounded-2xl bg-amber-400/10 p-4 ring-1 ring-amber-300/20">
+            {showTradeNote ? <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-200">Trade note</div> : null}
+            {showTradeNote ? <p className="mt-2 text-sm leading-6 text-stone-100">{tradeNote}</p> : null}
             {showWhyItMatters ? <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-200">Why it matters</div> : null}
-            {showWhyItMatters ? <p className="mt-2 text-sm leading-6 text-stone-100">{project.whyItMatters}</p> : null}
+            {showWhyItMatters ? <p className={showTradeNote ? 'mt-4 text-sm leading-6 text-stone-100' : 'mt-2 text-sm leading-6 text-stone-100'}>{project.whyItMatters}</p> : null}
             {showLikelyTrades ? (
               <>
-                <div className={showWhyItMatters ? 'mt-4 text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400' : 'text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400'}>
+                <div className={showWhyItMatters || showTradeNote ? 'mt-4 text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400' : 'text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400'}>
                   Likely trades involved
                 </div>
                 <p className="mt-2 text-sm leading-6 text-stone-200">{project.likelyTrades.join(', ')}</p>

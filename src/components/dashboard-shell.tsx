@@ -42,7 +42,7 @@ type TimeframeResolution = {
 
 const PROFILE_KEY = 'nbi-profile-v1';
 const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 10 • Batch Fill';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 11 • Unified Experience';
 const VISIBLE_SUMMARY_CHUNK_SIZE = 5;
 
 type VisibleGenerationProgress = {
@@ -859,6 +859,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
               <div className="rounded-[28px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
                 <h2 className="font-display text-3xl text-white">Builders</h2>
                 <p className="mt-1 text-sm text-stone-300">Call and email actions first, with project count and valuation for context.</p>
+                <p className="mt-2 text-xs text-stone-500">Where available, contact information is provided directly from permit records.</p>
               </div>
 
               <div className="space-y-4">
