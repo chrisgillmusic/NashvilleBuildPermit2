@@ -30,7 +30,7 @@ const REQUEST_RETRIES = 4;
 const CONCURRENCY = 6;
 const SUMMARY_BATCH_SIZE = 5;
 const SUMMARY_BATCH_CONCURRENCY = 2;
-const CONTENT_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 12 • Content Cleanup';
+const CONTENT_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 13 • Summary First';
 
 type ArcgisFeature = {
   attributes: Record<string, unknown>;
@@ -1019,6 +1019,77 @@ export async function generateTradeNoteForProject(id: string, trade = '', option
       }),
       lastCacheStatus: result.cacheStatus
     }
+  };
+}
+
+export async function generateTradeNotesForProjects(ids: string[], trade = '', options?: { bypassCache?: boolean }) {
+  if (!trade.trim()) {
+    return {
+      results: [] as Array<{ id: string; tradeSource: 'ai' | 'fallback'; cacheStatus: string; failureReason: string; stored: boolean }>,
+      projects: [] as PermitProject[],
+      debug: buildDebugPayload('unknown', 'unknown', {
+        lastGenerateActionResult: 'Trade is required to generate visible trade notes.'
+      })
+    };
+  }
+
+  const { projects } = await loadProjects();
+  const uniqueIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+  const selected = uniqueIds
+    .map((id) => projects.find((project) => project.id === id) || null)
+    .filter((project): project is PermitProject => Boolean(project));
+
+  const results: Array<{ id: string; tradeSource: 'ai' | 'fallback'; cacheStatus: string; failureReason: string; stored: boolean }> = [];
+
+  for (const selectedChunk of chunk(selected, SUMMARY_BATCH_SIZE)) {
+    const chunkResults = await mapWithConcurrency(
+      selectedChunk,
+      async (project) => {
+        const storedSummary = await getStoredBaseSummary(buildBaseSummaryInput(project));
+        const summary = storedSummary.summary?.summary || project.readableSummary;
+        const result = await generateAndStoreTradeNote(buildTradeNoteInput(project, trade, summary), {
+          bypassCache: options?.bypassCache ?? false
+        });
+
+        return {
+          id: project.id,
+          tradeSource: result.resultSource,
+          cacheStatus: result.cacheStatus,
+          failureReason: result.failureReason,
+          stored: result.stored
+        };
+      },
+      SUMMARY_BATCH_CONCURRENCY
+    );
+
+    results.push(...chunkResults);
+  }
+
+  const refreshedProjects = await enrichProjects(selected, trade);
+  const storedAiCount = refreshedProjects.filter((project) => project.summarySource === 'ai').length;
+  const needsSummaryCount = refreshedProjects.filter((project) => project.needsSummary).length;
+  const needsTradeNoteCount = refreshedProjects.filter((project) => project.needsTradeNote).length;
+  const needsRefreshCount = refreshedProjects.filter((project) => project.needsSummaryRefresh || project.needsTradeNoteRefresh).length;
+  const generatedCount = results.filter((result) => result.tradeSource === 'ai').length;
+  const failedCount = results.filter((result) => result.tradeSource !== 'ai').length;
+
+  return {
+    results,
+    projects: refreshedProjects,
+    stats: {
+      requested: selected.length,
+      generated: generatedCount,
+      failed: failedCount,
+      batchSize: SUMMARY_BATCH_SIZE,
+      concurrency: SUMMARY_BATCH_CONCURRENCY
+    },
+    debug: buildDebugPayload(refreshedProjects[0]?.summarySource || 'unknown', refreshedProjects[0]?.tradeSource || 'unknown', {
+      storedAiCount,
+      needsSummaryCount,
+      needsTradeNoteCount,
+      needsRefreshCount,
+      lastGenerateActionResult: `Generated trade notes for ${generatedCount} of ${selected.length} requested jobs.${failedCount ? ` ${failedCount} stayed on fallback.` : ''}`
+    })
   };
 }
 

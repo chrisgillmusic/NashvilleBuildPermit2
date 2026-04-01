@@ -42,7 +42,7 @@ type TimeframeResolution = {
 
 const PROFILE_KEY = 'nbi-profile-v1';
 const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 12 • Content Cleanup';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 13 • Summary First';
 const VISIBLE_SUMMARY_CHUNK_SIZE = 5;
 
 type VisibleGenerationProgress = {
@@ -237,11 +237,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [isGeneratingVisibleAi, setIsGeneratingVisibleAi] = useState(false);
   const [isRegeneratingVisibleAi, setIsRegeneratingVisibleAi] = useState(false);
   const [isGeneratingTradeNote, setIsGeneratingTradeNote] = useState(false);
-  const [isTestingAi, setIsTestingAi] = useState(false);
-  const [isRunningDbWriteTest, setIsRunningDbWriteTest] = useState(false);
-  const [aiTestResult, setAiTestResult] = useState<string>('');
-  const [dbWriteTestResult, setDbWriteTestResult] = useState<string>('');
-  const [lastFailingStage, setLastFailingStage] = useState<string | null>(null);
+  const [isGeneratingVisibleTradeNotes, setIsGeneratingVisibleTradeNotes] = useState(false);
   const [visibleGenerationProgress, setVisibleGenerationProgress] = useState<VisibleGenerationProgress | null>(null);
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
 
@@ -338,6 +334,10 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const marketNote = buildMarketNote(profile.trade, baseProjects);
   const visibleStoredCount = useMemo(() => visibleProjects.filter((project) => project.summarySource === 'ai').length, [visibleProjects]);
   const visibleNeedsSummaryCount = useMemo(() => visibleProjects.filter((project) => project.needsSummary).length, [visibleProjects]);
+  const visibleNeedsTradeNoteCount = useMemo(
+    () => (profile.trade ? visibleProjects.filter((project) => project.needsTradeNote || project.needsTradeNoteRefresh).length : 0),
+    [profile.trade, visibleProjects]
+  );
   const visibleNeedsRefreshCount = useMemo(
     () => visibleProjects.filter((project) => project.needsSummaryRefresh || project.needsTradeNoteRefresh).length,
     [visibleProjects]
@@ -430,85 +430,6 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
     }
   }
 
-  async function handleTestAi() {
-    const id = debugProjectId.trim();
-    if (!id) return;
-
-    setIsTestingAi(true);
-    setAiTestResult('');
-    setLastFailingStage(null);
-
-    try {
-      const response = await fetch('/api/permits/truth-mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, trade: profile.trade, mode: 'pipeline' })
-      });
-
-      if (!response.ok) throw new Error('Failed to run truth mode test');
-
-      const result = (await response.json()) as {
-        projectId: string;
-        failingStage: string | null;
-        stageResults: Array<{ stage: string; success: boolean }>;
-        finalResultSource: 'ai' | 'fallback';
-        finalVisibleSummary: string;
-      };
-
-      setLastFailingStage(result.failingStage);
-      setAiTestResult(JSON.stringify(result, null, 2));
-      await refreshPayload();
-    } catch (error) {
-      setAiTestResult(
-        JSON.stringify(
-          {
-            success: false,
-            failureReason: (error as Error).message
-          },
-          null,
-          2
-        )
-      );
-    } finally {
-      setIsTestingAi(false);
-    }
-  }
-
-  async function handleDbWriteTruthTest() {
-    const id = debugProjectId.trim();
-    if (!id) return;
-
-    setIsRunningDbWriteTest(true);
-    setDbWriteTestResult('');
-
-    try {
-      const response = await fetch('/api/permits/truth-mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, trade: profile.trade, mode: 'db_write_test' })
-      });
-
-      if (!response.ok) throw new Error('Failed to run DB write truth test');
-
-      const result = await response.json();
-      setDbWriteTestResult(JSON.stringify(result, null, 2));
-      await refreshPayload();
-    } catch (error) {
-      setDbWriteTestResult(
-        JSON.stringify(
-          {
-            success: false,
-            failureReason: (error as Error).message
-          },
-          null,
-          2
-        )
-      );
-    } finally {
-      setIsRunningDbWriteTest(false);
-    }
-  }
-
   async function handleGenerateTradeNote() {
     const id = debugProjectId.trim();
     if (!id || !profile.trade) return;
@@ -543,6 +464,138 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       setRegenerateStatus((error as Error).message);
     } finally {
       setIsGeneratingTradeNote(false);
+    }
+  }
+
+  async function handleGenerateVisibleTradeNotes() {
+    if (!profile.trade) {
+      setRegenerateStatus('Select a trade before generating visible trade notes.');
+      return;
+    }
+
+    if (!visibleProjects.length) {
+      setRegenerateStatus('No visible jobs to generate trade notes for.');
+      return;
+    }
+
+    const idsNeedingTradeNotes = visibleProjects
+      .filter((project) => project.needsTradeNote || project.needsTradeNoteRefresh)
+      .map((project) => project.id);
+    const storedBefore = visibleProjects.length - idsNeedingTradeNotes.length;
+
+    if (!idsNeedingTradeNotes.length) {
+      setVisibleGenerationProgress({
+        totalVisible: visibleProjects.length,
+        storedBefore,
+        needed: 0,
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        batchIndex: 0,
+        batchCount: 0,
+        actionLabel: 'Generate trade notes',
+        status: 'complete'
+      });
+      setRegenerateStatus('All visible jobs already have current trade notes for this trade.');
+      return;
+    }
+
+    const batches = Array.from({ length: Math.ceil(idsNeedingTradeNotes.length / VISIBLE_SUMMARY_CHUNK_SIZE) }, (_, index) =>
+      idsNeedingTradeNotes.slice(index * VISIBLE_SUMMARY_CHUNK_SIZE, index * VISIBLE_SUMMARY_CHUNK_SIZE + VISIBLE_SUMMARY_CHUNK_SIZE)
+    );
+
+    setIsGeneratingVisibleTradeNotes(true);
+    setRegenerateStatus(null);
+    setVisibleGenerationProgress({
+      totalVisible: visibleProjects.length,
+      storedBefore,
+      needed: idsNeedingTradeNotes.length,
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      batchIndex: 0,
+      batchCount: batches.length,
+      actionLabel: 'Generate trade notes',
+      status: 'running'
+    });
+
+    try {
+      let generatedCount = 0;
+      let failedCount = 0;
+      let latestDebug: DashboardPayload['debug'] | null = null;
+
+      for (const [batchIndex, ids] of batches.entries()) {
+        const response = await fetch('/api/permits/generate-trade-note', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ids,
+            trade: profile.trade,
+            bypassCache: false
+          })
+        });
+
+        if (!response.ok) throw new Error(`Failed to generate visible trade notes in batch ${batchIndex + 1}`);
+
+        const result = (await response.json()) as {
+          results: Array<{ id: string; tradeSource: 'ai' | 'fallback'; cacheStatus: string }>;
+          debug: DashboardPayload['debug'];
+        };
+
+        latestDebug = result.debug;
+        generatedCount += result.results.filter((entry) => entry.tradeSource === 'ai').length;
+        failedCount += result.results.filter((entry) => entry.tradeSource !== 'ai').length;
+
+        setVisibleGenerationProgress({
+          totalVisible: visibleProjects.length,
+          storedBefore,
+          needed: idsNeedingTradeNotes.length,
+          processed: Math.min((batchIndex + 1) * VISIBLE_SUMMARY_CHUNK_SIZE, idsNeedingTradeNotes.length),
+          succeeded: generatedCount,
+          failed: failedCount,
+          batchIndex: batchIndex + 1,
+          batchCount: batches.length,
+          actionLabel: 'Generate trade notes',
+          status: 'running'
+        });
+      }
+
+      const overallMessage = `Generated trade notes for ${generatedCount} of ${idsNeedingTradeNotes.length} visible jobs.${failedCount ? ` ${failedCount} stayed on fallback.` : ''}`;
+      const nextPayload = await refreshPayload();
+      startTransition(() =>
+        setPayload({
+          ...nextPayload,
+          debug: {
+            ...(latestDebug || nextPayload.debug),
+            lastGenerateActionResult: overallMessage
+          }
+        })
+      );
+      setVisibleGenerationProgress({
+        totalVisible: visibleProjects.length,
+        storedBefore,
+        needed: idsNeedingTradeNotes.length,
+        processed: idsNeedingTradeNotes.length,
+        succeeded: generatedCount,
+        failed: failedCount,
+        batchIndex: batches.length,
+        batchCount: batches.length,
+        actionLabel: 'Generate trade notes',
+        status: 'complete'
+      });
+      setRegenerateStatus(overallMessage);
+    } catch (error) {
+      setVisibleGenerationProgress((current) =>
+        current
+          ? {
+              ...current,
+              status: 'failed'
+            }
+          : null
+      );
+      setRegenerateStatus((error as Error).message);
+    } finally {
+      setIsGeneratingVisibleTradeNotes(false);
     }
   }
 
@@ -1161,6 +1214,10 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       <div className="mt-1 font-semibold text-white">{visibleNeedsSummaryCount}</div>
                     </div>
                     <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Trade notes needed in visible view</div>
+                      <div className="mt-1 font-semibold text-white">{visibleNeedsTradeNoteCount}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Needs summaries</div>
                       <div className="mt-1 font-semibold text-white">{payload.debug.needsSummaryCount}</div>
                     </div>
@@ -1180,23 +1237,15 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last regenerate action</div>
                       <div className="mt-1 font-semibold text-white">{payload.debug.lastRegenerateActionResult || 'No regenerate action yet'}</div>
                     </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last failing stage</div>
-                      <div className="mt-1 font-semibold text-white">{lastFailingStage || 'No truth test yet'}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last DB write test</div>
-                      <div className="mt-1 font-semibold text-white">{dbWriteTestResult ? 'Completed' : 'Not run yet'}</div>
-                    </div>
                   </div>
 
                   <div className="mt-4">
-                    <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Truth mode for one job</div>
+                    <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Single job tools</div>
                     <label className="mt-3 flex items-center gap-2 text-sm text-stone-300">
                       <input type="checkbox" checked={debugBypassCache} onChange={(event) => setDebugBypassCache(event.target.checked)} className="rounded border-white/20 bg-white/5" />
                       Bypass cache on generation
                     </label>
-                    <div className="mt-2 text-xs text-stone-400">Target permit for this pass: 24468. Job cards and detail headers also show internal project IDs.</div>
+                    <div className="mt-2 text-xs text-stone-400">Use a project ID here for targeted regeneration while keeping the product UI clean.</div>
                     <div className="mt-2 flex flex-wrap gap-3">
                       <input
                         value={debugProjectId}
@@ -1205,16 +1254,6 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                         placeholder="Project ID"
                         className="min-w-[180px] flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none"
                       />
-                      <button
-                        onClick={handleTestAi}
-                        disabled={isTestingAi || !debugProjectId.trim()}
-                        className={clsx(
-                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
-                          isTestingAi || !debugProjectId.trim() ? 'bg-white/10 text-stone-500' : 'border border-white/20 text-stone-100'
-                        )}
-                      >
-                        {isTestingAi ? 'Running truth test…' : 'Run Truth Mode Test'}
-                      </button>
                       <button
                         onClick={handleRegenerate}
                         disabled={isRegenerating || !debugProjectId.trim()}
@@ -1237,16 +1276,6 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       >
                         {isGeneratingTradeNote ? 'Generating note…' : 'Generate trade note'}
                       </button>
-                      <button
-                        onClick={handleDbWriteTruthTest}
-                        disabled={isRunningDbWriteTest || !debugProjectId.trim()}
-                        className={clsx(
-                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
-                          isRunningDbWriteTest || !debugProjectId.trim() ? 'bg-white/10 text-stone-500' : 'border border-white/20 text-stone-100'
-                        )}
-                      >
-                        {isRunningDbWriteTest ? 'Testing DB write…' : 'Run DB Write Test'}
-                      </button>
                     </div>
                     <div className="mt-4 flex flex-wrap gap-3">
                       <button
@@ -1258,6 +1287,18 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                         )}
                       >
                         {isGeneratingVisibleAi ? 'Generating summaries…' : 'Generate summaries for visible jobs'}
+                      </button>
+                      <button
+                        onClick={handleGenerateVisibleTradeNotes}
+                        disabled={isGeneratingVisibleTradeNotes || !visibleProjects.length || !profile.trade}
+                        className={clsx(
+                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
+                          isGeneratingVisibleTradeNotes || !visibleProjects.length || !profile.trade
+                            ? 'bg-white/10 text-stone-500'
+                            : 'border border-white/20 text-stone-100'
+                        )}
+                      >
+                        {isGeneratingVisibleTradeNotes ? 'Generating trade notes…' : 'Generate trade notes for visible jobs'}
                       </button>
                       <button
                         onClick={handleRegenerateVisibleAi}
@@ -1290,16 +1331,6 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       </div>
                     ) : null}
                     {regenerateStatus ? <div className="mt-3 text-sm text-stone-300">{regenerateStatus}</div> : null}
-                    {aiTestResult ? (
-                      <pre className="mt-3 overflow-x-auto rounded-2xl bg-black/30 p-4 text-xs leading-6 text-stone-200">
-                        {aiTestResult}
-                      </pre>
-                    ) : null}
-                    {dbWriteTestResult ? (
-                      <pre className="mt-3 overflow-x-auto rounded-2xl bg-black/30 p-4 text-xs leading-6 text-stone-200">
-                        {dbWriteTestResult}
-                      </pre>
-                    ) : null}
                   </div>
                 </details>
               </div>
