@@ -109,6 +109,22 @@ export function buildTradeRelevance(project: PermitProject, trade: string): stri
   return `Less directly tied to ${trade.toLowerCase()}, but still within your market filters.`;
 }
 
+export function buildVisibleInsight(project: PermitProject, trade: string): string {
+  const summary = (project.readableSummary || '').trim().toLowerCase();
+  const tradeInsight = (trade && project.tradeSource === 'ai' ? project.tradeSummary : '').trim();
+  const genericInsight = (project.whyItMatters || '').trim();
+
+  if (tradeInsight && tradeInsight.toLowerCase() !== summary) {
+    return tradeInsight;
+  }
+
+  if (genericInsight && genericInsight.toLowerCase() !== summary) {
+    return genericInsight;
+  }
+
+  return '';
+}
+
 export function projectViewForMode(projects: PermitProject[], mode: FeedMode, trade: string): PermitProject[] {
   if (mode === 'all-jobs' || !trade) return projects;
   return projects.filter((project) => projectMatchesTrade(project, trade));

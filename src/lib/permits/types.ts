@@ -29,6 +29,8 @@ export type PermitProject = {
   tradeSource: InterpretationSource;
   needsSummary?: boolean;
   needsTradeNote?: boolean;
+  needsSummaryRefresh?: boolean;
+  needsTradeNoteRefresh?: boolean;
   coordinates: {
     lat: number | null;
     lon: number | null;
@@ -83,7 +85,9 @@ export type DashboardPayload = {
     storedAiCount: number;
     needsSummaryCount: number;
     needsTradeNoteCount: number;
+    needsRefreshCount: number;
     lastGenerateActionResult: string;
+    lastRegenerateActionResult: string;
     lastSummarySource: InterpretationSource | 'unknown';
     lastTradeSource: InterpretationSource | 'unknown';
   };

@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { formatCurrency, formatPhone } from '@/lib/format';
 import { getProjectById } from '@/lib/permits/live';
-import { buildTradeRelevance } from '@/lib/permits/trade-utils';
+import { buildVisibleInsight } from '@/lib/permits/trade-utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,17 +13,9 @@ function formatPhoneHref(phone: string): string {
 export default async function ProjectDetailPage({ params, searchParams }: { params: { id: string }; searchParams: { trade?: string } }) {
   const project = await getProjectById(params.id, searchParams.trade || '');
   if (!project) notFound();
-  const summaryText = project.readableSummary || project.purpose || 'No project summary listed on the permit.';
-  const tradeNote = searchParams.trade ? buildTradeRelevance(project, searchParams.trade) : '';
-  const normalizedSummary = summaryText.trim().toLowerCase();
-  const normalizedTradeNote = tradeNote.trim().toLowerCase();
-  const normalizedWhyItMatters = project.whyItMatters.trim().toLowerCase();
-  const showTradeNote = Boolean(normalizedTradeNote && normalizedTradeNote !== normalizedSummary);
-  const showWhyItMatters = Boolean(
-    project.whyItMatters &&
-      normalizedWhyItMatters !== normalizedSummary &&
-      (!normalizedTradeNote || normalizedWhyItMatters !== normalizedTradeNote)
-  );
+  const summaryText = project.readableSummary || 'No project summary listed on the permit.';
+  const insightText = buildVisibleInsight(project, searchParams.trade || '');
+  const showInsight = Boolean(insightText);
   const showLikelyTrades = project.likelyTrades.length > 0 && project.likelyTrades.length <= 4;
 
   return (
@@ -62,13 +54,11 @@ export default async function ProjectDetailPage({ params, searchParams }: { para
 
         <div className="mt-6 grid gap-4 sm:grid-cols-2">
           <div className="rounded-2xl bg-amber-400/10 p-4 ring-1 ring-amber-300/20">
-            {showTradeNote ? <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-200">Trade note</div> : null}
-            {showTradeNote ? <p className="mt-2 text-sm leading-6 text-stone-100">{tradeNote}</p> : null}
-            {showWhyItMatters ? <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-200">Why it matters</div> : null}
-            {showWhyItMatters ? <p className={showTradeNote ? 'mt-4 text-sm leading-6 text-stone-100' : 'mt-2 text-sm leading-6 text-stone-100'}>{project.whyItMatters}</p> : null}
+            {showInsight ? <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-200">Why it matters</div> : null}
+            {showInsight ? <p className="mt-2 text-sm leading-6 text-stone-100">{insightText}</p> : null}
             {showLikelyTrades ? (
               <>
-                <div className={showWhyItMatters || showTradeNote ? 'mt-4 text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400' : 'text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400'}>
+                <div className={showInsight ? 'mt-4 text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400' : 'text-[11px] font-semibold uppercase tracking-[0.22em] text-stone-400'}>
                   Likely trades involved
                 </div>
                 <p className="mt-2 text-sm leading-6 text-stone-200">{project.likelyTrades.join(', ')}</p>

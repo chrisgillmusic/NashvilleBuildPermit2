@@ -14,6 +14,8 @@ import {
   getStoredTradeNotes,
   requestBaseSummaryTruth,
   saveBaseSummaryTruth,
+  type StoredBaseSummary,
+  type StoredTradeNote,
   type TruthStageResult
 } from './ai';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject, SummaryStats } from './types';
@@ -28,6 +30,7 @@ const REQUEST_RETRIES = 4;
 const CONCURRENCY = 6;
 const SUMMARY_BATCH_SIZE = 5;
 const SUMMARY_BATCH_CONCURRENCY = 2;
+const CONTENT_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 12 • Content Cleanup';
 
 type ArcgisFeature = {
   attributes: Record<string, unknown>;
@@ -532,11 +535,11 @@ function buildTradeNoteInput(project: PermitProject, trade: string, summary: str
 function applyNarrative(
   project: PermitProject,
   trade: string,
-  baseSummary?: string | null,
-  storedTradeNote?: { tradeNote: string; isTradeRelevant: boolean } | null
+  storedBaseSummary?: StoredBaseSummary | null,
+  storedTradeNote?: StoredTradeNote | null
 ): PermitProject {
   const fallbackTrade = fallbackTradeDecision(project, trade);
-  const summary = baseSummary?.trim() || project.readableSummary;
+  const summary = storedBaseSummary?.summary?.trim() || project.readableSummary;
   const tradeSummary =
     storedTradeNote?.tradeNote && !textsOverlap(storedTradeNote.tradeNote, summary) && !textsOverlap(storedTradeNote.tradeNote, project.whyItMatters)
       ? storedTradeNote.tradeNote
@@ -552,10 +555,12 @@ function applyNarrative(
     readableSummary: summary,
     tradeSummary,
     isTradeRelevant,
-    summarySource: baseSummary ? 'ai' : 'fallback',
+    summarySource: storedBaseSummary ? 'ai' : 'fallback',
     tradeSource: trade ? (storedTradeNote ? 'ai' : 'fallback') : 'fallback',
-    needsSummary: !baseSummary,
-    needsTradeNote: Boolean(trade) && !storedTradeNote
+    needsSummary: !storedBaseSummary,
+    needsTradeNote: Boolean(trade) && !storedTradeNote,
+    needsSummaryRefresh: Boolean(storedBaseSummary && storedBaseSummary.version !== CONTENT_VERSION),
+    needsTradeNoteRefresh: Boolean(trade && storedTradeNote && storedTradeNote.version !== CONTENT_VERSION)
   };
   console.log(`FINAL SUMMARY SOURCE: ${enrichedProject.summarySource}`);
   console.log(`FINAL TRADE SOURCE: ${enrichedProject.tradeSource}`);
@@ -569,7 +574,7 @@ async function enrichProjectNarrative(project: PermitProject, trade: string): Pr
   const summary = storedSummary.summary?.summary || null;
   const storedTrade = trade ? await getStoredTradeNote(buildTradeNoteInput(project, trade, summary || project.readableSummary)) : null;
   console.log('AI CACHE STATUS:', storedTrade?.cacheStatus || storedSummary.cacheStatus);
-  return applyNarrative(project, trade, summary, storedTrade?.tradeNote || null);
+  return applyNarrative(project, trade, storedSummary.summary, storedTrade?.tradeNote || null);
 }
 
 async function enrichProjects(projects: PermitProject[], trade = ''): Promise<PermitProject[]> {
@@ -585,9 +590,9 @@ async function enrichProjects(projects: PermitProject[], trade = ''): Promise<Pe
   const tradeLookups = trade ? await getStoredTradeNotes(tradeInputs) : new Map();
 
   return projects.map((project) => {
-    const summary = summaryLookups.get(project.id)?.summary?.summary || null;
+    const summary = summaryLookups.get(project.id)?.summary || null;
     const tradeNote = trade ? tradeLookups.get(project.id)?.tradeNote || null : null;
-    return applyNarrative(project, trade, summary, tradeNote ? { tradeNote: tradeNote.tradeNote, isTradeRelevant: tradeNote.isTradeRelevant } : null);
+    return applyNarrative(project, trade, summary, tradeNote);
   });
 }
 
@@ -744,7 +749,14 @@ function safePreview(value: string, max = 320): string {
 function buildDebugPayload(
   summarySource: DashboardPayload['debug']['lastSummarySource'],
   tradeSource: DashboardPayload['debug']['lastTradeSource'],
-  options?: { storedAiCount?: number; needsSummaryCount?: number; needsTradeNoteCount?: number; lastGenerateActionResult?: string }
+  options?: {
+    storedAiCount?: number;
+    needsSummaryCount?: number;
+    needsTradeNoteCount?: number;
+    needsRefreshCount?: number;
+    lastGenerateActionResult?: string;
+    lastRegenerateActionResult?: string;
+  }
 ) {
   const aiDebug = getAiDebugState();
   return {
@@ -753,7 +765,9 @@ function buildDebugPayload(
     storedAiCount: options?.storedAiCount ?? 0,
     needsSummaryCount: options?.needsSummaryCount ?? 0,
     needsTradeNoteCount: options?.needsTradeNoteCount ?? 0,
+    needsRefreshCount: options?.needsRefreshCount ?? 0,
     lastGenerateActionResult: options?.lastGenerateActionResult || '',
+    lastRegenerateActionResult: options?.lastRegenerateActionResult || '',
     lastSummarySource: summarySource,
     lastTradeSource: tradeSource
   };
@@ -769,6 +783,7 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
   const storedAiCount = enrichedProjects.filter((project) => project.summarySource === 'ai').length;
   const needsSummaryCount = enrichedProjects.filter((project) => project.needsSummary).length;
   const needsTradeNoteCount = enrichedProjects.filter((project) => project.needsTradeNote).length;
+  const needsRefreshCount = enrichedProjects.filter((project) => project.needsSummaryRefresh || project.needsTradeNoteRefresh).length;
 
   return {
     filters,
@@ -782,7 +797,8 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
     debug: buildDebugPayload(lastProject?.summarySource || 'unknown', lastProject?.tradeSource || 'unknown', {
       storedAiCount,
       needsSummaryCount,
-      needsTradeNoteCount
+      needsTradeNoteCount,
+      needsRefreshCount
     })
   };
 }
@@ -806,6 +822,7 @@ export async function getProjectsByContact(name: string, filters?: Partial<Dashb
   const storedAiCount = enrichedProjects.filter((project) => project.summarySource === 'ai').length;
   const needsSummaryCount = enrichedProjects.filter((project) => project.needsSummary).length;
   const needsTradeNoteCount = enrichedProjects.filter((project) => project.needsTradeNote).length;
+  const needsRefreshCount = enrichedProjects.filter((project) => project.needsSummaryRefresh || project.needsTradeNoteRefresh).length;
 
   return {
     filters: nextFilters,
@@ -820,7 +837,8 @@ export async function getProjectsByContact(name: string, filters?: Partial<Dashb
     debug: buildDebugPayload(lastProject?.summarySource || 'unknown', lastProject?.tradeSource || 'unknown', {
       storedAiCount,
       needsSummaryCount,
-      needsTradeNoteCount
+      needsTradeNoteCount,
+      needsRefreshCount
     })
   };
 }
@@ -845,6 +863,7 @@ export async function regenerateProjectInterpretation(id: string, trade = '', op
         storedAiCount: project?.summarySource === 'ai' ? 1 : 0,
         needsSummaryCount: project?.needsSummary ? 1 : 0,
         needsTradeNoteCount: project?.needsTradeNote ? 1 : 0,
+        needsRefreshCount: project?.needsSummaryRefresh || project?.needsTradeNoteRefresh ? 1 : 0,
         lastGenerateActionResult: result.resultSource === 'ai' ? `Stored summary for project ${id}.` : `Summary generation fell back for project ${id}.`
       }),
       lastCacheStatus: result.cacheStatus
@@ -899,7 +918,11 @@ export async function testProjectAiInterpretation(id: string, trade = '') {
   };
 }
 
-export async function generateSummariesForProjects(ids: string[], _trade = '', options?: { bypassCache?: boolean }) {
+export async function generateSummariesForProjects(
+  ids: string[],
+  trade = '',
+  options?: { bypassCache?: boolean; regenerateTradeNotes?: boolean }
+) {
   const { projects } = await loadProjects();
   const uniqueIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
   const selected = uniqueIds
@@ -916,12 +939,27 @@ export async function generateSummariesForProjects(ids: string[], _trade = '', o
       }
     );
     results.push(...chunkResults);
+
+    if (options?.regenerateTradeNotes && trade) {
+      await mapWithConcurrency(
+        selectedChunk,
+        async (project) => {
+          const refreshedSummary = await getStoredBaseSummary(buildBaseSummaryInput(project));
+          const summary = refreshedSummary.summary?.summary || project.readableSummary;
+          await generateAndStoreTradeNote(buildTradeNoteInput(project, trade, summary), {
+            bypassCache: options?.bypassCache ?? false
+          });
+        },
+        SUMMARY_BATCH_CONCURRENCY
+      );
+    }
   }
 
-  const refreshedProjects = await enrichProjects(selected, _trade);
+  const refreshedProjects = await enrichProjects(selected, trade);
   const storedAiCount = refreshedProjects.filter((project) => project.summarySource === 'ai').length;
   const needsSummaryCount = refreshedProjects.filter((project) => project.needsSummary).length;
   const needsTradeNoteCount = refreshedProjects.filter((project) => project.needsTradeNote).length;
+  const needsRefreshCount = refreshedProjects.filter((project) => project.needsSummaryRefresh || project.needsTradeNoteRefresh).length;
   const generatedCount = results.filter((result) => result.summarySource === 'ai').length;
   const failedCount = results.filter((result) => result.summarySource !== 'ai').length;
 
@@ -942,7 +980,11 @@ export async function generateSummariesForProjects(ids: string[], _trade = '', o
         storedAiCount,
         needsSummaryCount,
         needsTradeNoteCount,
-        lastGenerateActionResult: `Generated summaries for ${generatedCount} of ${selected.length} requested jobs. ${failedCount ? `${failedCount} failed and were left in fallback.` : 'No failures in this run.'}`
+        needsRefreshCount,
+        lastGenerateActionResult: `Generated summaries for ${generatedCount} of ${selected.length} requested jobs. ${failedCount ? `${failedCount} failed and were left in fallback.` : 'No failures in this run.'}`,
+        lastRegenerateActionResult: options?.bypassCache
+          ? `Regenerated content for ${generatedCount} of ${selected.length} requested jobs.${failedCount ? ` ${failedCount} stayed on fallback.` : ''}`
+          : ''
       }
     )
   };
@@ -972,6 +1014,7 @@ export async function generateTradeNoteForProject(id: string, trade = '', option
         storedAiCount: refreshed.summarySource === 'ai' ? 1 : 0,
         needsSummaryCount: refreshed.needsSummary ? 1 : 0,
         needsTradeNoteCount: refreshed.needsTradeNote ? 1 : 0,
+        needsRefreshCount: refreshed.needsSummaryRefresh || refreshed.needsTradeNoteRefresh ? 1 : 0,
         lastGenerateActionResult: result.resultSource === 'ai' ? `Stored trade note for project ${id}.` : `Trade note generation fell back for project ${id}.`
       }),
       lastCacheStatus: result.cacheStatus

@@ -42,7 +42,7 @@ type TimeframeResolution = {
 
 const PROFILE_KEY = 'nbi-profile-v1';
 const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 11 • Unified Experience';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 12 • Content Cleanup';
 const VISIBLE_SUMMARY_CHUNK_SIZE = 5;
 
 type VisibleGenerationProgress = {
@@ -54,6 +54,7 @@ type VisibleGenerationProgress = {
   failed: number;
   batchIndex: number;
   batchCount: number;
+  actionLabel: string;
   status: 'idle' | 'running' | 'complete' | 'failed';
 };
 
@@ -234,6 +235,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [isGeneratingVisibleAi, setIsGeneratingVisibleAi] = useState(false);
+  const [isRegeneratingVisibleAi, setIsRegeneratingVisibleAi] = useState(false);
   const [isGeneratingTradeNote, setIsGeneratingTradeNote] = useState(false);
   const [isTestingAi, setIsTestingAi] = useState(false);
   const [isRunningDbWriteTest, setIsRunningDbWriteTest] = useState(false);
@@ -336,6 +338,10 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const marketNote = buildMarketNote(profile.trade, baseProjects);
   const visibleStoredCount = useMemo(() => visibleProjects.filter((project) => project.summarySource === 'ai').length, [visibleProjects]);
   const visibleNeedsSummaryCount = useMemo(() => visibleProjects.filter((project) => project.needsSummary).length, [visibleProjects]);
+  const visibleNeedsRefreshCount = useMemo(
+    () => visibleProjects.filter((project) => project.needsSummaryRefresh || project.needsTradeNoteRefresh).length,
+    [visibleProjects]
+  );
   const jobsSummary = useMemo(() => {
     if (!profile.trade) {
       return `${visibleProjects.length} permits in ${labelForTimeframe(timeframeState.displayed)}.`;
@@ -559,6 +565,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
         failed: 0,
         batchIndex: 0,
         batchCount: 0,
+        actionLabel: 'Generate summaries',
         status: 'complete'
       });
       setRegenerateStatus('All visible jobs already have stored summaries.');
@@ -580,6 +587,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       failed: 0,
       batchIndex: 0,
       batchCount: batches.length,
+      actionLabel: 'Generate summaries',
       status: 'running'
     });
 
@@ -594,6 +602,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ids,
+            trade: profile.trade,
             bypassCache: false
           })
         });
@@ -618,6 +627,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
           failed: failedCount,
           batchIndex: batchIndex + 1,
           batchCount: batches.length,
+          actionLabel: 'Generate summaries',
           status: 'running'
         });
       }
@@ -642,6 +652,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
         failed: failedCount,
         batchIndex: batches.length,
         batchCount: batches.length,
+        actionLabel: 'Generate summaries',
         status: 'complete'
       });
       setRegenerateStatus(overallMessage);
@@ -657,6 +668,140 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       setRegenerateStatus((error as Error).message);
     } finally {
       setIsGeneratingVisibleAi(false);
+    }
+  }
+
+  async function handleRegenerateVisibleAi() {
+    if (!visibleProjects.length) {
+      setRegenerateStatus('No visible jobs to regenerate.');
+      return;
+    }
+
+    const idsNeedingRefresh = visibleProjects
+      .filter(
+        (project) =>
+          project.needsSummary ||
+          project.needsTradeNote ||
+          project.needsSummaryRefresh ||
+          project.needsTradeNoteRefresh
+      )
+      .map((project) => project.id);
+    const storedBefore = visibleProjects.length - idsNeedingRefresh.length;
+
+    if (!idsNeedingRefresh.length) {
+      setVisibleGenerationProgress({
+        totalVisible: visibleProjects.length,
+        storedBefore,
+        needed: 0,
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        batchIndex: 0,
+        batchCount: 0,
+        actionLabel: 'Regenerate content',
+        status: 'complete'
+      });
+      setRegenerateStatus('Visible content is already current for this view.');
+      return;
+    }
+
+    const batches = Array.from({ length: Math.ceil(idsNeedingRefresh.length / VISIBLE_SUMMARY_CHUNK_SIZE) }, (_, index) =>
+      idsNeedingRefresh.slice(index * VISIBLE_SUMMARY_CHUNK_SIZE, index * VISIBLE_SUMMARY_CHUNK_SIZE + VISIBLE_SUMMARY_CHUNK_SIZE)
+    );
+
+    setIsRegeneratingVisibleAi(true);
+    setRegenerateStatus(null);
+    setVisibleGenerationProgress({
+      totalVisible: visibleProjects.length,
+      storedBefore,
+      needed: idsNeedingRefresh.length,
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      batchIndex: 0,
+      batchCount: batches.length,
+      actionLabel: 'Regenerate content',
+      status: 'running'
+    });
+
+    try {
+      let generatedCount = 0;
+      let failedCount = 0;
+      let latestDebug: DashboardPayload['debug'] | null = null;
+
+      for (const [batchIndex, ids] of batches.entries()) {
+        const response = await fetch('/api/permits/generate-ai', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ids,
+            trade: profile.trade,
+            bypassCache: true,
+            regenerateTradeNotes: Boolean(profile.trade)
+          })
+        });
+
+        if (!response.ok) throw new Error(`Failed to regenerate visible content in batch ${batchIndex + 1}`);
+
+        const result = (await response.json()) as {
+          results: Array<{ id: string; summarySource: 'ai' | 'fallback'; cacheStatus: string }>;
+          debug: DashboardPayload['debug'];
+        };
+
+        latestDebug = result.debug;
+        generatedCount += result.results.filter((entry) => entry.summarySource === 'ai').length;
+        failedCount += result.results.filter((entry) => entry.summarySource !== 'ai').length;
+
+        setVisibleGenerationProgress({
+          totalVisible: visibleProjects.length,
+          storedBefore,
+          needed: idsNeedingRefresh.length,
+          processed: Math.min((batchIndex + 1) * VISIBLE_SUMMARY_CHUNK_SIZE, idsNeedingRefresh.length),
+          succeeded: generatedCount,
+          failed: failedCount,
+          batchIndex: batchIndex + 1,
+          batchCount: batches.length,
+          actionLabel: 'Regenerate content',
+          status: 'running'
+        });
+      }
+
+      const overallMessage = `Regenerated content for ${generatedCount} of ${idsNeedingRefresh.length} visible jobs.${failedCount ? ` ${failedCount} stayed on fallback.` : ''}`;
+      const nextPayload = await refreshPayload();
+      startTransition(() =>
+        setPayload({
+          ...nextPayload,
+          debug: {
+            ...(latestDebug || nextPayload.debug),
+            lastRegenerateActionResult: overallMessage
+          }
+        })
+      );
+      setVisibleGenerationProgress({
+        totalVisible: visibleProjects.length,
+        storedBefore,
+        needed: idsNeedingRefresh.length,
+        processed: idsNeedingRefresh.length,
+        succeeded: generatedCount,
+        failed: failedCount,
+        batchIndex: batches.length,
+        batchCount: batches.length,
+        actionLabel: 'Regenerate content',
+        status: 'complete'
+      });
+      setRegenerateStatus(overallMessage);
+    } catch (error) {
+      setVisibleGenerationProgress((current) =>
+        current
+          ? {
+              ...current,
+              status: 'failed'
+            }
+          : null
+      );
+      setRegenerateStatus((error as Error).message);
+    } finally {
+      setIsRegeneratingVisibleAi(false);
     }
   }
 
@@ -1023,9 +1168,17 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Needs trade notes</div>
                       <div className="mt-1 font-semibold text-white">{payload.debug.needsTradeNoteCount}</div>
                     </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Needs refresh</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.needsRefreshCount}</div>
+                    </div>
                     <div className="rounded-2xl bg-white/5 px-4 py-3 sm:col-span-2">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last generate action</div>
                       <div className="mt-1 font-semibold text-white">{payload.debug.lastGenerateActionResult || 'No generate action yet'}</div>
+                    </div>
+                    <div className="rounded-2xl bg-white/5 px-4 py-3 sm:col-span-2">
+                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last regenerate action</div>
+                      <div className="mt-1 font-semibold text-white">{payload.debug.lastRegenerateActionResult || 'No regenerate action yet'}</div>
                     </div>
                     <div className="rounded-2xl bg-white/5 px-4 py-3">
                       <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last failing stage</div>
@@ -1106,6 +1259,16 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                       >
                         {isGeneratingVisibleAi ? 'Generating summaries…' : 'Generate summaries for visible jobs'}
                       </button>
+                      <button
+                        onClick={handleRegenerateVisibleAi}
+                        disabled={isRegeneratingVisibleAi || !visibleProjects.length}
+                        className={clsx(
+                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
+                          isRegeneratingVisibleAi || !visibleProjects.length ? 'bg-white/10 text-stone-500' : 'border border-white/20 text-stone-100'
+                        )}
+                      >
+                        {isRegeneratingVisibleAi ? 'Regenerating content…' : 'Regenerate visible jobs'}
+                      </button>
                     </div>
                     {visibleGenerationProgress ? (
                       <div className="mt-3 rounded-2xl bg-white/5 px-4 py-3 text-sm text-stone-200">
@@ -1118,10 +1281,12 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                           • {visibleGenerationProgress.failed} failed
                         </div>
                         <div className="mt-1">
-                          Batch: {visibleGenerationProgress.batchIndex} / {visibleGenerationProgress.batchCount || 0} • Status:{' '}
+                          {visibleGenerationProgress.actionLabel}: batch {visibleGenerationProgress.batchIndex} / {visibleGenerationProgress.batchCount || 0} • Status:{' '}
                           {visibleGenerationProgress.status}
                         </div>
-                        <div className="mt-2 text-xs text-stone-400">Base summaries fill in this action. Trade notes stay separate.</div>
+                        <div className="mt-2 text-xs text-stone-400">
+                          Generate fills missing base summaries. Regenerate refreshes stored summaries and current-trade insight content.
+                        </div>
                       </div>
                     ) : null}
                     {regenerateStatus ? <div className="mt-3 text-sm text-stone-300">{regenerateStatus}</div> : null}

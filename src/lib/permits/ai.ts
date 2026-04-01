@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import type { InterpretationSource } from './types';
 
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 11 • Unified Experience';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 12 • Content Cleanup';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const AI_TIMEOUT_MS = 20_000;
 const SUMMARY_STORAGE_PREFIX = 'summary_engine:v1:base:';
