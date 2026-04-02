@@ -174,7 +174,6 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   const [isGeneratingVisibleTradeNotes, setIsGeneratingVisibleTradeNotes] = useState(false);
   const [visibleGenerationProgress, setVisibleGenerationProgress] = useState<VisibleGenerationProgress | null>(null);
   const [logoFallback, setLogoFallback] = useState(false);
-  const [dividerFallback, setDividerFallback] = useState(false);
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
 
   const requestQuery = useMemo(() => {
@@ -751,10 +750,8 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
       <main className="mx-auto min-h-screen w-full max-w-5xl px-4 pb-32 pt-4 sm:px-6">
         {activeTab === 'jobs' ? (
           <section>
-            <header
-              className="sticky top-0 z-20 -mx-4 px-4 pb-6 pt-3 backdrop-blur-sm sm:-mx-6 sm:px-6"
-            >
-              <div className="flex items-start justify-between gap-4 border-b border-[#ff3b30]/40 pb-5">
+            <header className="px-1 pb-8 pt-3">
+              <div className="flex items-start justify-between gap-4 border-b border-white/8 pb-5">
                 <div>
                   <div className="text-4xl font-semibold tracking-[-0.04em] text-[#f5f5f7]">{format(new Date(), 'MMMM d')}</div>
                   <p className="mt-3 max-w-xl text-sm leading-6 text-[#b3b3b8]">{buildHeaderSummary(profile.trade)}</p>
@@ -783,9 +780,10 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
             </header>
 
             <div className="space-y-10">
-              {feedSections.map((section) => (
+              {feedSections.map((section, index) => (
                 <section key={section.key} className="space-y-4">
                   <div className="space-y-3">
+                    {index === 0 ? <div className="h-px w-full bg-[#7f1d1d]" /> : null}
                     <div className="flex items-end justify-between gap-3">
                       <div className="flex flex-wrap items-baseline gap-2">
                         <h2 className="text-2xl font-semibold text-[#ff3b30]">{section.title}</h2>
@@ -793,19 +791,6 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                       </div>
                       <div className="text-xs uppercase tracking-[0.2em] text-[#636366]">{section.projects.length} jobs</div>
                     </div>
-                    {dividerFallback ? (
-                      <div className="h-px w-full bg-[#7f1d1d]" />
-                    ) : (
-                      <img
-                        src="/brand/red-divider.png"
-                        alt=""
-                        aria-hidden="true"
-                        width={960}
-                        height={12}
-                        className="h-[7px] w-full object-cover opacity-80"
-                        onError={() => setDividerFallback(true)}
-                      />
-                    )}
                   </div>
 
                   {section.projects.length ? (
@@ -1005,14 +990,16 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
       </main>
 
       <nav className="fixed inset-x-0 bottom-4 z-50 px-4">
-        <div className="mx-auto flex w-full max-w-md items-center justify-between rounded-[24px] border border-white/10 bg-black/70 px-3 py-3 shadow-[0_22px_60px_rgba(0,0,0,0.48)] backdrop-blur-xl">
+        <div className="mx-auto flex w-full max-w-md items-center justify-between rounded-[26px] border border-white/10 bg-[rgba(17,17,19,0.78)] px-3 py-3 shadow-[0_22px_60px_rgba(0,0,0,0.55),0_0_0_1px_rgba(255,255,255,0.05)_inset] backdrop-blur-2xl">
           {MOBILE_TABS.map((tab) => (
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
               className={clsx(
-                'flex-1 rounded-[18px] px-3 py-3 text-center text-[11px] font-semibold uppercase tracking-[0.18em] transition active:scale-[0.98]',
-                activeTab === tab.key ? 'bg-[#ff3b30] text-white' : 'text-[#8e8e93]'
+                'flex-1 rounded-[18px] px-3 py-3 text-center text-[11px] font-semibold uppercase tracking-[0.18em] transition duration-150 active:scale-[0.98]',
+                activeTab === tab.key
+                  ? 'bg-[#ff3b30] text-white shadow-[0_12px_24px_rgba(255,59,48,0.22)]'
+                  : 'text-[#8e8e93] hover:bg-white/[0.03]'
               )}
             >
               {tab.label}
