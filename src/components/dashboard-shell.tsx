@@ -148,10 +148,10 @@ function buildHeaderSummary(trade: string): string {
   return `${label} looks slow this week. Interior build-outs are carrying volume.`;
 }
 
-function sectionSubtitle(key: TimeframeKey): string {
-  if (key === 'new') return '(last 7 days)';
-  if (key === 'active') return '(8 to 30 days)';
-  return '(older than 30 days)';
+function sectionLabel(key: TimeframeKey): { title: string; subtitle: string } {
+  if (key === 'new') return { title: 'Top Jobs', subtitle: '(this week)' };
+  if (key === 'active') return { title: 'Jobs In Progress', subtitle: '(this month)' };
+  return { title: 'Earlier Jobs', subtitle: '(older than 30 days)' };
 }
 
 export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
@@ -173,6 +173,8 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   const [isGeneratingTradeNote, setIsGeneratingTradeNote] = useState(false);
   const [isGeneratingVisibleTradeNotes, setIsGeneratingVisibleTradeNotes] = useState(false);
   const [visibleGenerationProgress, setVisibleGenerationProgress] = useState<VisibleGenerationProgress | null>(null);
+  const [logoFallback, setLogoFallback] = useState(false);
+  const [dividerFallback, setDividerFallback] = useState(false);
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
 
   const requestQuery = useMemo(() => {
@@ -213,14 +215,13 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
 
   const feedSections = useMemo(
     () => [
-      { key: 'new' as const, title: 'Top Jobs', subtitle: sectionSubtitle('new'), projects: projectsForTimeframe(visibleProjects, 'new') },
+      { key: 'new' as const, ...sectionLabel('new'), projects: projectsForTimeframe(visibleProjects, 'new') },
       {
         key: 'active' as const,
-        title: 'Jobs In Progress',
-        subtitle: sectionSubtitle('active'),
+        ...sectionLabel('active'),
         projects: projectsForTimeframe(visibleProjects, 'active')
       },
-      { key: 'older' as const, title: 'Earlier Jobs', subtitle: sectionSubtitle('older'), projects: projectsForTimeframe(visibleProjects, 'older') }
+      { key: 'older' as const, ...sectionLabel('older'), projects: projectsForTimeframe(visibleProjects, 'older') }
     ],
     [visibleProjects]
   );
@@ -758,12 +759,25 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                   <div className="text-4xl font-semibold tracking-[-0.04em] text-[#f5f5f7]">{format(new Date(), 'MMMM d')}</div>
                   <p className="mt-3 max-w-xl text-sm leading-6 text-[#b3b3b8]">{buildHeaderSummary(profile.trade)}</p>
                 </div>
-                <div className="flex items-center gap-3 pt-1">
-                  <div className="h-3 w-3 rounded-sm bg-[#ff3b30]" />
-                  <div className="text-right">
-                    <div className="text-xs uppercase tracking-[0.32em] text-[#8e8e93]">BidHammer</div>
-                    <div className="mt-1 text-xs text-[#636366]">{isLoading ? 'Refreshing' : 'Live permit feed'}</div>
-                  </div>
+                <div className="flex flex-col items-end gap-2 pt-1">
+                  {logoFallback ? (
+                    <div className="text-right">
+                      <div className="text-xs uppercase tracking-[0.32em] text-[#8e8e93]">BidHammer</div>
+                      <div className="mt-1 text-xs text-[#636366]">{isLoading ? 'Refreshing' : 'Live permit feed'}</div>
+                    </div>
+                  ) : (
+                    <>
+                      <img
+                        src="/brand/bh-logo.png"
+                        alt="BidHammer"
+                        width={96}
+                        height={34}
+                        className="h-auto w-[88px] object-contain sm:w-[96px]"
+                        onError={() => setLogoFallback(true)}
+                      />
+                      <div className="text-xs text-[#636366]">{isLoading ? 'Refreshing' : 'Live permit feed'}</div>
+                    </>
+                  )}
                 </div>
               </div>
             </header>
@@ -771,12 +785,27 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
             <div className="space-y-10">
               {feedSections.map((section) => (
                 <section key={section.key} className="space-y-4">
-                  <div className="flex items-end justify-between gap-3 border-b border-[#ff3b30]/35 pb-3">
-                    <div>
-                      <h2 className="text-2xl font-semibold text-[#ff3b30]">{section.title}</h2>
-                      <p className="mt-1 text-sm text-[#8e8e93]">{section.subtitle}</p>
+                  <div className="space-y-3">
+                    <div className="flex items-end justify-between gap-3">
+                      <div className="flex flex-wrap items-baseline gap-2">
+                        <h2 className="text-2xl font-semibold text-[#ff3b30]">{section.title}</h2>
+                        <p className="text-sm text-[#8e8e93]">{section.subtitle}</p>
+                      </div>
+                      <div className="text-xs uppercase tracking-[0.2em] text-[#636366]">{section.projects.length} jobs</div>
                     </div>
-                    <div className="text-xs uppercase tracking-[0.2em] text-[#636366]">{section.projects.length} jobs</div>
+                    {dividerFallback ? (
+                      <div className="h-px w-full bg-[#7f1d1d]" />
+                    ) : (
+                      <img
+                        src="/brand/red-divider.png"
+                        alt=""
+                        aria-hidden="true"
+                        width={960}
+                        height={12}
+                        className="h-[7px] w-full object-cover opacity-80"
+                        onError={() => setDividerFallback(true)}
+                      />
+                    )}
                   </div>
 
                   {section.projects.length ? (

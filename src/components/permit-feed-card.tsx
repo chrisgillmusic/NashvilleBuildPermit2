@@ -1,6 +1,8 @@
+import clsx from 'clsx';
 import { formatCurrency, formatPhone } from '@/lib/format';
 import { buildVisibleInsight } from '@/lib/permits/trade-utils';
 import type { PermitProject } from '@/lib/permits/types';
+import { useState } from 'react';
 
 type Props = {
   project: PermitProject;
@@ -17,10 +19,20 @@ function formatTextHref(phone: string): string {
   return `sms:${phone.replace(/[^\d+]/g, '')}`;
 }
 
+const PLACEHOLDER_IMAGES = ['/placeholders/street-1.png', '/placeholders/street-2.png', '/placeholders/street-3.png'] as const;
+
+function placeholderImageForProject(project: PermitProject): string {
+  const numericId = Number.parseInt(project.id, 10);
+  const seed = Number.isFinite(numericId) ? numericId : project.objectId;
+  return PLACEHOLDER_IMAGES[Math.abs(seed) % PLACEHOLDER_IMAGES.length];
+}
+
 export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
   const summaryText = project.readableSummary || 'No project summary listed on the permit.';
   const insightText = buildVisibleInsight(project, trade || '');
   const hasContactActions = Boolean(project.contactPhone || project.contactEmail);
+  const [imageFallback, setImageFallback] = useState(false);
+  const placeholderImage = placeholderImageForProject(project);
 
   return (
     <>
@@ -33,14 +45,32 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
                 {summaryText}
               </p>
             </div>
-            <div className="flex h-24 w-24 shrink-0 flex-col justify-between rounded-[18px] border border-white/8 bg-[#2a2a2d] p-3 text-[10px] uppercase tracking-[0.22em] text-[#8e8e93]">
-              <span>Preview</span>
-              <span className="leading-tight text-[#c7c7cc]">Street view soon</span>
+            <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-[18px] border border-white/8 bg-[#2a2a2d]">
+              {!imageFallback ? (
+                <>
+                  <img
+                    src={placeholderImage}
+                    alt=""
+                    aria-hidden="true"
+                    width={96}
+                    height={96}
+                    className="h-full w-full object-cover saturate-50 brightness-[0.82]"
+                    onError={() => setImageFallback(true)}
+                  />
+                  <div className="absolute inset-0 bg-black/30" />
+                  <div className="absolute inset-x-2 bottom-2 text-[10px] uppercase tracking-[0.16em] text-[#d1d1d6]">Street view</div>
+                </>
+              ) : (
+                <div className="flex h-full w-full flex-col justify-between p-3 text-[10px] uppercase tracking-[0.22em] text-[#8e8e93]">
+                  <span>Preview</span>
+                  <span className="leading-tight text-[#c7c7cc]">Street view soon</span>
+                </div>
+              )}
             </div>
           </div>
 
-          <div className="mt-4 flex items-center justify-between gap-4 border-t border-white/6 pt-4 text-sm text-[#a1a1aa]">
-            <div className="min-w-0">
+          <div className="mt-5 flex items-center justify-between gap-4 border-t border-white/6 pt-4 text-sm text-[#a1a1aa]">
+            <div className="min-w-0 space-y-1">
               <div>{project.issueDateLabel}</div>
               <div className="mt-1 truncate text-[#c7c7cc]">{project.contactName || 'Contact not listed'}</div>
             </div>
@@ -101,7 +131,7 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
                 {project.contactPhone ? (
                   <a
                     href={formatPhoneHref(project.contactPhone)}
-                    className="rounded-full bg-[#ff3b30] px-5 py-3 text-sm font-semibold text-white transition active:scale-[0.98]"
+                    className={clsx('rounded-full bg-[#ff3b30] px-5 py-3 text-sm font-semibold text-white transition active:scale-[0.98]')}
                   >
                     Call
                   </a>
