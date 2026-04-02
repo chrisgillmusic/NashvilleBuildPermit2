@@ -173,7 +173,6 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   const [isGeneratingTradeNote, setIsGeneratingTradeNote] = useState(false);
   const [isGeneratingVisibleTradeNotes, setIsGeneratingVisibleTradeNotes] = useState(false);
   const [visibleGenerationProgress, setVisibleGenerationProgress] = useState<VisibleGenerationProgress | null>(null);
-  const [scrollY, setScrollY] = useState(0);
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
 
   const requestQuery = useMemo(() => {
@@ -204,38 +203,6 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
     if (!onboardingReady) return;
     window.localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
   }, [onboardingReady, profile]);
-
-  useEffect(() => {
-    const onScroll = () => setScrollY(window.scrollY);
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => window.removeEventListener('scroll', onScroll);
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(async () => {
-      setIsLoading(true);
-
-      try {
-        const response = await fetch(`/api/permits?${requestQuery}`, {
-          signal: controller.signal,
-          cache: 'no-store'
-        });
-        if (!response.ok) throw new Error('Failed to refresh permits');
-        const nextPayload = (await response.json()) as DashboardPayload;
-        startTransition(() => setPayload(nextPayload));
-      } catch (error) {
-        if ((error as Error).name !== 'AbortError') console.error(error);
-      } finally {
-        setIsLoading(false);
-      }
-    }, 180);
-
-    return () => {
-      controller.abort();
-      window.clearTimeout(timeoutId);
-    };
-  }, [requestQuery]);
 
   const visibleProjects = useMemo(() => {
     if (profile.defaultFeedMode === 'my-trade' && profile.trade) {
@@ -270,9 +237,6 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
     [visibleProjects]
   );
 
-  const headerOpacity = Math.max(0, 1 - scrollY / 140);
-  const headerTranslate = Math.min(scrollY * 0.08, 18);
-
   function updateProfile<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
     setProfile((current) => ({ ...current, [key]: value }));
   }
@@ -298,17 +262,22 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   }
 
   async function refreshPayload() {
-    const response = await fetch(`/api/permits?${requestQuery}`, {
-      cache: 'no-store'
-    });
+    setIsLoading(true);
+    try {
+      const response = await fetch(`/api/permits?${requestQuery}`, {
+        cache: 'no-store'
+      });
 
-    if (!response.ok) {
-      throw new Error('Failed to refresh permits');
+      if (!response.ok) {
+        throw new Error('Failed to refresh permits');
+      }
+
+      const nextPayload = (await response.json()) as DashboardPayload;
+      startTransition(() => setPayload(nextPayload));
+      return nextPayload;
+    } finally {
+      setIsLoading(false);
     }
-
-    const nextPayload = (await response.json()) as DashboardPayload;
-    startTransition(() => setPayload(nextPayload));
-    return nextPayload;
   }
 
   async function handleRegenerate() {
@@ -783,10 +752,6 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
           <section>
             <header
               className="sticky top-0 z-20 -mx-4 px-4 pb-6 pt-3 backdrop-blur-sm sm:-mx-6 sm:px-6"
-              style={{
-                opacity: headerOpacity,
-                transform: `translateY(-${headerTranslate}px)`
-              }}
             >
               <div className="flex items-start justify-between gap-4 border-b border-[#ff3b30]/40 pb-5">
                 <div>
