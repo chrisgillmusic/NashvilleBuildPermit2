@@ -1,25 +1,19 @@
 'use client';
 
 import clsx from 'clsx';
-import dynamic from 'next/dynamic';
-import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { formatDistanceToNowStrict, isAfter, parseISO, subDays } from 'date-fns';
+import { format, formatDistanceToNowStrict, isAfter, parseISO, subDays } from 'date-fns';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { formatCurrency } from '@/lib/format';
-import { projectMatchesTrade, projectViewForMode, TRADE_OPTIONS, type FeedMode } from '@/lib/permits/trade-utils';
+import { projectViewForMode, TRADE_OPTIONS, type FeedMode } from '@/lib/permits/trade-utils';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject } from '@/lib/permits/types';
 import { PermitFeedCard } from './permit-feed-card';
 
-const ProjectMap = dynamic(() => import('./project-map').then((module) => module.ProjectMap), {
-  ssr: false,
-  loading: () => <div className="h-[420px] rounded-[28px] bg-stone-200/70 animate-pulse" />
-});
-
 type Props = {
   initialPayload: DashboardPayload;
-  initialTab?: 'home' | 'jobs' | 'builders' | 'profile';
+  initialTab?: 'home' | 'jobs' | 'builders' | 'contractors' | 'profile';
 };
 
-type TabKey = 'home' | 'jobs' | 'builders' | 'profile';
+type TabKey = 'jobs' | 'contractors' | 'profile';
 type TimeframeKey = 'new' | 'active' | 'older';
 
 type UserProfile = {
@@ -32,18 +26,6 @@ type UserProfile = {
   budgetMax: number;
   defaultFeedMode: FeedMode;
 };
-
-type TimeframeResolution = {
-  requested: TimeframeKey;
-  displayed: TimeframeKey;
-  projects: PermitProject[];
-  message: string | null;
-};
-
-const PROFILE_KEY = 'nbi-profile-v1';
-const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
-const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 13 • Summary First';
-const VISIBLE_SUMMARY_CHUNK_SIZE = 5;
 
 type VisibleGenerationProgress = {
   totalVisible: number;
@@ -58,19 +40,29 @@ type VisibleGenerationProgress = {
   status: 'idle' | 'running' | 'complete' | 'failed';
 };
 
+const PROFILE_KEY = 'nbi-profile-v1';
+const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 13 • Summary First';
+const VISIBLE_SUMMARY_CHUNK_SIZE = 5;
+
 const ONBOARDING_CARDS = [
-  'Nashville Build Insider scans live permit data to surface real construction opportunities.',
-  'Choose your trade to see the projects most relevant to your work.',
-  'View active contractors and contact them directly from the app.',
-  'Track new permits across Nashville in real time.'
+  'BidHammer scans live permit data to surface real construction opportunities.',
+  'Choose your trade to put the most relevant jobs at the top of your scroll.',
+  'Call active contractors directly when permit records include contact information.',
+  'Stay on top of new Nashville jobs before someone else gets there first.'
 ] as const;
 
 const MOBILE_TABS: Array<{ key: TabKey; label: string }> = [
-  { key: 'home', label: 'Home' },
   { key: 'jobs', label: 'Jobs' },
-  { key: 'builders', label: 'Builders' },
+  { key: 'contractors', label: 'Contractors' },
   { key: 'profile', label: 'Profile' }
 ];
+
+function normalizeInitialTab(initialTab?: Props['initialTab']): TabKey {
+  if (initialTab === 'profile') return 'profile';
+  if (initialTab === 'builders' || initialTab === 'contractors') return 'contractors';
+  return 'jobs';
+}
 
 function buildQuery(filters: DashboardFilters): string {
   const params = new URLSearchParams({
@@ -151,80 +143,22 @@ function projectsForTimeframe(projects: PermitProject[], timeframe: TimeframeKey
   return projects.filter((project) => !isAfter(parseISO(project.issueDate), subDays(now, 30)));
 }
 
-function labelForTimeframe(timeframe: TimeframeKey): string {
-  if (timeframe === 'new') return 'This Week';
-  if (timeframe === 'active') return 'This Month';
-  return 'Earlier';
+function buildHeaderSummary(trade: string): string {
+  const label = trade || 'Drywall';
+  return `${label} looks slow this week. Interior build-outs are carrying volume.`;
 }
 
-function resolveTimeframeProjects(projects: PermitProject[], requested: TimeframeKey): TimeframeResolution {
-  const order: TimeframeKey[] = requested === 'new' ? ['new', 'active', 'older'] : requested === 'active' ? ['active', 'older'] : ['older'];
-
-  for (const timeframe of order) {
-    const results = projectsForTimeframe(projects, timeframe);
-    if (!results.length) continue;
-
-    if (timeframe === requested) {
-      return { requested, displayed: timeframe, projects: results, message: null };
-    }
-
-    if (requested === 'new' && timeframe === 'active') {
-      return {
-        requested,
-        displayed: timeframe,
-        projects: results,
-        message: 'No new permits in the last 7 days. Showing recent activity.'
-      };
-    }
-
-    if (requested === 'new' && timeframe === 'older') {
-      return {
-        requested,
-        displayed: timeframe,
-        projects: results,
-        message: 'No new or recent permits in the last 30 days. Showing older activity.'
-      };
-    }
-
-    if (requested === 'active' && timeframe === 'older') {
-      return {
-        requested,
-        displayed: timeframe,
-        projects: results,
-        message: 'No permits from the past month. Showing earlier activity.'
-      };
-    }
-  }
-
-  return { requested, displayed: requested, projects: [], message: null };
+function sectionSubtitle(key: TimeframeKey): string {
+  if (key === 'new') return '(last 7 days)';
+  if (key === 'active') return '(8 to 30 days)';
+  return '(older than 30 days)';
 }
 
-function buildMarketNote(trade: string, projects: PermitProject[]): string {
-  if (!trade) return 'Choose your trade and we’ll tune the brief around the permits most worth your time.';
-  if (!projects.length) return `${trade} activity is quiet in the current filter set.`;
-
-  const latestWeek = projects.filter((project) => isAfter(parseISO(project.issueDate), subDays(new Date(), 7)));
-  const descriptors = latestWeek.length ? latestWeek : projects.slice(0, 10);
-  const text = descriptors.map((project) => `${project.permitSubtype} ${project.readableSummary}`.toLowerCase()).join(' ');
-
-  const phrases: string[] = [];
-  phrases.push(`${trade} activity is ${latestWeek.length >= 4 ? 'busy' : latestWeek.length >= 2 ? 'steady' : 'light'} this week.`);
-  if (text.includes('restaurant')) phrases.push('Restaurant work is still showing up.');
-  if (text.includes('interior') || text.includes('tenant finish') || text.includes('build-out')) phrases.push('Interior build-outs are carrying a lot of the volume.');
-  if (text.includes('medical')) phrases.push('A few medical jobs are mixed in.');
-  phrases.push(`${Math.min(projects.length, 8)} permits look worth a call.`);
-
-  return phrases.join(' ');
-}
-
-export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
-  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
+  const [activeTab, setActiveTab] = useState<TabKey>(() => normalizeInitialTab(initialTab));
   const [filters, setFilters] = useState<DashboardFilters>(initialPayload.filters);
   const [payload, setPayload] = useState<DashboardPayload>(initialPayload);
   const [isLoading, setIsLoading] = useState(false);
-  const [feedMode, setFeedMode] = useState<FeedMode>('my-trade');
-  const [requestedTimeframe, setRequestedTimeframe] = useState<TimeframeKey>('new');
-  const [jobsView, setJobsView] = useState<'feed' | 'map'>('feed');
   const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [profile, setProfile] = useState<UserProfile>(() => getInitialProfile(initialPayload));
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -239,32 +173,14 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
   const [isGeneratingTradeNote, setIsGeneratingTradeNote] = useState(false);
   const [isGeneratingVisibleTradeNotes, setIsGeneratingVisibleTradeNotes] = useState(false);
   const [visibleGenerationProgress, setVisibleGenerationProgress] = useState<VisibleGenerationProgress | null>(null);
+  const [scrollY, setScrollY] = useState(0);
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
 
-  const deferredNeighborhood = useDeferredValue(filters.neighborhood);
-  const deferredContractor = useDeferredValue(filters.contractorQuery);
-
-  const requestFilters = useMemo(
-    () => ({
-      ...filters,
-      neighborhood: deferredNeighborhood,
-      contractorQuery: deferredContractor
-    }),
-    [deferredContractor, deferredNeighborhood, filters]
-  );
-
   const requestQuery = useMemo(() => {
-    const params = new URLSearchParams(buildQuery(requestFilters));
+    const params = new URLSearchParams(buildQuery(filters));
     if (profile.trade) params.set('trade', profile.trade);
     return params.toString();
-  }, [profile.trade, requestFilters]);
-
-  const contactContextQuery = useMemo(() => {
-    const params = new URLSearchParams(buildQuery(requestFilters));
-    params.set('mode', feedMode);
-    if (profile.trade) params.set('trade', profile.trade);
-    return params.toString();
-  }, [feedMode, profile.trade, requestFilters]);
+  }, [filters, profile.trade]);
 
   useEffect(() => {
     const storedProfile = window.localStorage.getItem(PROFILE_KEY);
@@ -272,23 +188,28 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       const parsed = JSON.parse(storedProfile) as Partial<UserProfile>;
       const merged = { ...getInitialProfile(initialPayload), ...parsed };
       setProfile(merged);
-      setFeedMode(merged.defaultFeedMode);
       setFilters((current) => ({
         ...current,
-        minBudget: merged.budgetMin,
-        maxBudget: merged.budgetMax
+        minBudget: merged.budgetMin ?? current.minBudget,
+        maxBudget: merged.budgetMax ?? current.maxBudget
       }));
     }
 
     const onboardingComplete = window.localStorage.getItem(ONBOARDING_KEY) === 'true';
     setShowOnboarding(!onboardingComplete);
     setOnboardingReady(true);
-  }, []);
+  }, [initialPayload]);
 
   useEffect(() => {
     if (!onboardingReady) return;
     window.localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
   }, [onboardingReady, profile]);
+
+  useEffect(() => {
+    const onScroll = () => setScrollY(window.scrollY);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -316,22 +237,28 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
     };
   }, [requestQuery]);
 
-  const baseProjects = useMemo(() => {
-    if (feedMode === 'my-trade' && profile.trade) return projectViewForMode(payload.projects, 'my-trade', profile.trade);
-    if (feedMode === 'my-trade' && !profile.trade) return [];
+  const visibleProjects = useMemo(() => {
+    if (profile.defaultFeedMode === 'my-trade' && profile.trade) {
+      return projectViewForMode(payload.projects, 'my-trade', profile.trade);
+    }
     return payload.projects;
-  }, [feedMode, payload.projects, profile.trade]);
+  }, [payload.projects, profile.defaultFeedMode, profile.trade]);
 
-  const timeframeState = useMemo(() => resolveTimeframeProjects(baseProjects, requestedTimeframe), [baseProjects, requestedTimeframe]);
-  const visibleProjects = timeframeState.projects;
-  const visibleContacts = useMemo(() => aggregateContacts(baseProjects), [baseProjects]);
-  const newThisWeekCount = useMemo(
-    () => baseProjects.filter((project) => isAfter(parseISO(project.issueDate), subDays(new Date(), 7))).length,
-    [baseProjects]
+  const feedSections = useMemo(
+    () => [
+      { key: 'new' as const, title: 'Top Jobs', subtitle: sectionSubtitle('new'), projects: projectsForTimeframe(visibleProjects, 'new') },
+      {
+        key: 'active' as const,
+        title: 'Jobs In Progress',
+        subtitle: sectionSubtitle('active'),
+        projects: projectsForTimeframe(visibleProjects, 'active')
+      },
+      { key: 'older' as const, title: 'Earlier Jobs', subtitle: sectionSubtitle('older'), projects: projectsForTimeframe(visibleProjects, 'older') }
+    ],
+    [visibleProjects]
   );
-  const dashboardPreviewContacts = visibleContacts.slice(0, 3);
-  const dashboardPreviewProjects = visibleProjects.slice(0, 3);
-  const marketNote = buildMarketNote(profile.trade, baseProjects);
+
+  const contractors = useMemo(() => aggregateContacts(visibleProjects), [visibleProjects]);
   const visibleStoredCount = useMemo(() => visibleProjects.filter((project) => project.summarySource === 'ai').length, [visibleProjects]);
   const visibleNeedsSummaryCount = useMemo(() => visibleProjects.filter((project) => project.needsSummary).length, [visibleProjects]);
   const visibleNeedsTradeNoteCount = useMemo(
@@ -342,17 +269,9 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
     () => visibleProjects.filter((project) => project.needsSummaryRefresh || project.needsTradeNoteRefresh).length,
     [visibleProjects]
   );
-  const jobsSummary = useMemo(() => {
-    if (!profile.trade) {
-      return `${visibleProjects.length} permits in ${labelForTimeframe(timeframeState.displayed)}.`;
-    }
 
-    if (!visibleProjects.length) {
-      return `No ${profile.trade.toLowerCase()} permits in ${labelForTimeframe(timeframeState.displayed)} right now.`;
-    }
-
-    return `${visibleProjects.length} ${profile.trade.toLowerCase()} permits in ${labelForTimeframe(timeframeState.displayed)}.`;
-  }, [profile.trade, timeframeState.displayed, visibleProjects.length]);
+  const headerOpacity = Math.max(0, 1 - scrollY / 140);
+  const headerTranslate = Math.min(scrollY * 0.08, 18);
 
   function updateProfile<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
     setProfile((current) => ({ ...current, [key]: value }));
@@ -370,7 +289,6 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
     if (!profile.trade) return;
     window.localStorage.setItem(ONBOARDING_KEY, 'true');
     setShowOnboarding(false);
-    setFeedMode(profile.defaultFeedMode);
   }
 
   function advanceOnboarding() {
@@ -422,7 +340,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
           debug: result.debug
         }))
       );
-      setRegenerateStatus(`Regenerated project ${result.project.id} using ${result.project.summarySource}.`);
+      setRegenerateStatus(`Regenerated project ${result.project.address || result.project.id}.`);
     } catch (error) {
       setRegenerateStatus((error as Error).message);
     } finally {
@@ -459,7 +377,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
           debug: result.debug
         }))
       );
-      setRegenerateStatus(`Generated trade note for project ${result.project.id} using ${result.project.tradeSource}.`);
+      setRegenerateStatus(`Generated trade note for ${result.project.address || result.project.id}.`);
     } catch (error) {
       setRegenerateStatus((error as Error).message);
     } finally {
@@ -860,494 +778,247 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
 
   return (
     <>
-      <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 pb-28 pt-5 sm:px-6">
-        <header className="rounded-[28px] border border-white/10 bg-[rgba(12,13,16,0.78)] px-4 py-4 shadow-[0_24px_80px_rgba(0,0,0,0.35)] backdrop-blur-xl sm:px-6">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">Nashville Build Insider</p>
-              <h1 className="mt-2 font-display text-3xl leading-none text-white">Live local permit intelligence for Nashville subcontractors.</h1>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-right text-xs text-stone-400">
-              <div>Updated from live permits</div>
-              <div className="mt-1 font-medium text-stone-100">{formatDistanceToNowStrict(new Date(payload.asOf), { addSuffix: true })}</div>
-            </div>
-          </div>
-        </header>
-
-        <div key={activeTab} className="mt-5 animate-[fade_up_220ms_ease]">
-          {activeTab === 'home' ? (
-            <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">{profile.trade ? `${profile.trade} briefing` : 'Market briefing'}</div>
-                <h2 className="mt-2 font-display text-3xl leading-tight text-white">
-                  {profile.trade ? `Here’s how ${profile.trade.toLowerCase()} work looks right now.` : 'Choose a trade to personalize the brief.'}
-                </h2>
-                <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-300">{marketNote}</p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-[24px] bg-stone-950 px-4 py-4 text-white shadow-[0_16px_40px_rgba(28,25,23,0.16)]">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-stone-300">Trade matches</div>
-                  <div className="mt-2 text-3xl font-semibold">{baseProjects.length}</div>
+      <main className="mx-auto min-h-screen w-full max-w-5xl px-4 pb-32 pt-4 sm:px-6">
+        {activeTab === 'jobs' ? (
+          <section>
+            <header
+              className="sticky top-0 z-20 -mx-4 px-4 pb-6 pt-3 backdrop-blur-sm sm:-mx-6 sm:px-6"
+              style={{
+                opacity: headerOpacity,
+                transform: `translateY(-${headerTranslate}px)`
+              }}
+            >
+              <div className="flex items-start justify-between gap-4 border-b border-[#ff3b30]/40 pb-5">
+                <div>
+                  <div className="text-4xl font-semibold tracking-[-0.04em] text-[#f5f5f7]">{format(new Date(), 'MMMM d')}</div>
+                  <p className="mt-3 max-w-xl text-sm leading-6 text-[#b3b3b8]">{buildHeaderSummary(profile.trade)}</p>
                 </div>
-                <div className="rounded-[24px] bg-amber-100 px-4 py-4 text-stone-950 shadow-[0_16px_40px_rgba(180,83,9,0.12)]">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-amber-900/70">New this week</div>
-                  <div className="mt-2 text-3xl font-semibold">{newThisWeekCount}</div>
-                </div>
-              </div>
-
-              <div className="rounded-[28px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="font-display text-2xl text-white">Worth a quick look</h3>
-                    <p className="mt-1 text-sm text-stone-400">A few permits and builders to check first.</p>
+                <div className="flex items-center gap-3 pt-1">
+                  <div className="h-3 w-3 rounded-sm bg-[#ff3b30]" />
+                  <div className="text-right">
+                    <div className="text-xs uppercase tracking-[0.32em] text-[#8e8e93]">BidHammer</div>
+                    <div className="mt-1 text-xs text-[#636366]">{isLoading ? 'Refreshing' : 'Live permit feed'}</div>
                   </div>
-                  <button onClick={() => setActiveTab('jobs')} className="rounded-full border border-white/20 px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-stone-100 active:scale-[0.98]">
-                    Open Jobs
-                  </button>
                 </div>
+              </div>
+            </header>
 
-                <div className="mt-4 grid gap-3">
-                  {dashboardPreviewProjects.map((project) => (
-                    <a key={project.id} href={`/projects/${project.id}${profile.trade ? `?trade=${encodeURIComponent(profile.trade)}` : ''}`} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4 transition hover:border-amber-300 active:scale-[0.99]">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm font-semibold text-white">{project.address || 'Address pending'}</div>
-                          <div className="mt-1 text-sm text-stone-300">{project.readableSummary}</div>
-                        </div>
-                        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-stone-400">{project.issueDateLabel}</div>
-                      </div>
-                    </a>
-                  ))}
-                </div>
+            <div className="space-y-10">
+              {feedSections.map((section) => (
+                <section key={section.key} className="space-y-4">
+                  <div className="flex items-end justify-between gap-3 border-b border-[#ff3b30]/35 pb-3">
+                    <div>
+                      <h2 className="text-2xl font-semibold text-[#ff3b30]">{section.title}</h2>
+                      <p className="mt-1 text-sm text-[#8e8e93]">{section.subtitle}</p>
+                    </div>
+                    <div className="text-xs uppercase tracking-[0.2em] text-[#636366]">{section.projects.length} jobs</div>
+                  </div>
 
-                <div className="mt-5 border-t border-stone-100 pt-5">
-                  <h4 className="text-sm font-semibold uppercase tracking-[0.16em] text-stone-400">Top builders</h4>
-                  <div className="mt-3 grid gap-3">
-                    {dashboardPreviewContacts.map((contact) => (
-                      <a key={contact.name} href={`/contacts?name=${encodeURIComponent(contact.name)}&${contactContextQuery}`} className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3 transition hover:border-amber-300 active:scale-[0.99]">
-                        <div>
-                          <div className="text-sm font-semibold text-white">{contact.name}</div>
-                          <div className="mt-1 text-sm text-stone-300">
-                            {contact.projectCount} projects • {formatCurrency(contact.totalValuation)}
-                          </div>
-                        </div>
-                        <div className="text-xs uppercase tracking-[0.16em] text-stone-400">Open</div>
+                  {section.projects.length ? (
+                    <div className="space-y-4">
+                      {section.projects.map((project) => (
+                        <PermitFeedCard
+                          key={project.id}
+                          project={project}
+                          trade={profile.trade}
+                          expanded={expandedJobId === project.id}
+                          onToggle={() => setExpandedJobId((current) => (current === project.id ? null : project.id))}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-[24px] border border-white/8 bg-[#111113] px-5 py-8 text-sm text-[#8e8e93]">
+                      No jobs in this section yet.
+                    </div>
+                  )}
+                </section>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === 'contractors' ? (
+          <section className="space-y-4 pt-2">
+            <div className="flex items-end justify-between gap-4 border-b border-[#ff3b30]/35 pb-4">
+              <div>
+                <div className="text-xs uppercase tracking-[0.28em] text-[#8e8e93]">Contractors</div>
+                <h1 className="mt-2 text-3xl font-semibold text-[#f5f5f7]">Call the names showing up on live permits.</h1>
+              </div>
+              <div className="text-sm text-[#8e8e93]">{contractors.length} contacts</div>
+            </div>
+
+            <p className="text-xs text-[#636366]">Where available, contact information is provided directly from permit records.</p>
+
+            <div className="space-y-4">
+              {contractors.map((contact) => (
+                <article key={contact.name} className="rounded-[26px] border border-white/8 bg-[#1c1c1e] p-5 shadow-[0_18px_48px_rgba(0,0,0,0.38)]">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h2 className="text-xl font-semibold text-[#f5f5f7]">{contact.name}</h2>
+                      <p className="mt-2 text-sm text-[#b3b3b8]">
+                        {contact.projectCount} projects • {formatCurrency(contact.totalValuation)}
+                      </p>
+                      {contact.phone ? <p className="mt-3 text-sm text-[#d8d8dc]">{contact.phone}</p> : null}
+                      {contact.email ? <p className="mt-1 text-sm text-[#d8d8dc]">{contact.email}</p> : null}
+                      {!contact.phone && !contact.email ? <p className="mt-3 text-sm text-[#8e8e93]">Contact info unavailable</p> : null}
+                    </div>
+                    <div className="rounded-2xl border border-white/8 bg-[#111113] px-4 py-3 text-right">
+                      <div className="text-[11px] uppercase tracking-[0.2em] text-[#8e8e93]">Most recent</div>
+                      <div className="mt-2 text-sm text-[#f5f5f7]">{formatDistanceToNowStrict(parseISO(contact.mostRecentPermit), { addSuffix: true })}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    {contact.phone ? (
+                      <a href={formatPhoneHref(contact.phone)} className="rounded-full bg-[#ff3b30] px-4 py-2 text-sm font-semibold text-white active:scale-[0.98]">
+                        Call
                       </a>
+                    ) : null}
+                    {contact.email ? (
+                      <a href={`mailto:${contact.email}`} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-[#f5f5f7] active:scale-[0.98]">
+                        Email
+                      </a>
+                    ) : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === 'profile' ? (
+          <section className="space-y-4 pt-2">
+            <div className="border-b border-[#ff3b30]/35 pb-4">
+              <div className="text-xs uppercase tracking-[0.28em] text-[#8e8e93]">Profile</div>
+              <h1 className="mt-2 text-3xl font-semibold text-[#f5f5f7]">Set your trade and keep the feed tuned to your work.</h1>
+            </div>
+
+            <div className="rounded-[28px] border border-white/8 bg-[#1c1c1e] p-5 shadow-[0_18px_48px_rgba(0,0,0,0.38)]">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="space-y-2 text-sm text-[#d8d8dc]">
+                  <span>Email</span>
+                  <input value={profile.email} onChange={(event) => updateProfile('email', event.target.value)} type="email" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                </label>
+                <label className="space-y-2 text-sm text-[#d8d8dc]">
+                  <span>Username</span>
+                  <input value={profile.username} onChange={(event) => updateProfile('username', event.target.value)} type="text" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                </label>
+                <label className="space-y-2 text-sm text-[#d8d8dc]">
+                  <span>Business name</span>
+                  <input value={profile.businessName} onChange={(event) => updateProfile('businessName', event.target.value)} type="text" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                </label>
+                <label className="space-y-2 text-sm text-[#d8d8dc]">
+                  <span>Phone</span>
+                  <input value={profile.phone} onChange={(event) => updateProfile('phone', event.target.value)} type="tel" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                </label>
+                <label className="space-y-2 text-sm text-[#d8d8dc]">
+                  <span>Selected trade</span>
+                  <select value={profile.trade} onChange={(event) => updateProfile('trade', event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]">
+                    <option value="">Select your trade</option>
+                    {TRADE_OPTIONS.map((trade) => (
+                      <option key={trade} value={trade}>
+                        {trade}
+                      </option>
                     ))}
-                  </div>
-                </div>
-              </div>
-            </section>
-          ) : null}
-
-          {activeTab === 'jobs' ? (
-            <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h2 className="font-display text-3xl text-white">Jobs</h2>
-                    <p className="mt-1 text-sm text-stone-300">{jobsSummary}</p>
-                  </div>
-                  <div className="text-xs uppercase tracking-[0.16em] text-stone-400">{isLoading ? 'Refreshing' : `${labelForTimeframe(timeframeState.displayed)}`}</div>
-                </div>
-
-                <div className="mt-4 flex flex-wrap gap-3">
-                  <div className="inline-flex rounded-full border border-stone-200 bg-stone-100 p-1 text-sm font-semibold">
-                    <button onClick={() => setFeedMode('my-trade')} className={clsx('rounded-full px-4 py-2 transition active:scale-[0.98]', feedMode === 'my-trade' ? 'bg-stone-950 text-white' : 'text-stone-700')}>
-                      My Trade
-                    </button>
-                    <button onClick={() => setFeedMode('all-jobs')} className={clsx('rounded-full px-4 py-2 transition active:scale-[0.98]', feedMode === 'all-jobs' ? 'bg-stone-950 text-white' : 'text-stone-700')}>
-                      All Jobs
-                    </button>
-                  </div>
-
-                  <div className="inline-flex rounded-full border border-stone-200 bg-stone-100 p-1 text-sm font-semibold">
-                    <button onClick={() => setJobsView('feed')} className={clsx('rounded-full px-4 py-2 transition active:scale-[0.98]', jobsView === 'feed' ? 'bg-stone-950 text-white shadow-[0_10px_24px_rgba(28,25,23,0.16)]' : 'text-stone-700')}>
-                      Feed
-                    </button>
-                    <button onClick={() => setJobsView('map')} className={clsx('rounded-full px-4 py-2 transition active:scale-[0.98]', jobsView === 'map' ? 'bg-stone-950 text-white shadow-[0_10px_24px_rgba(28,25,23,0.16)]' : 'text-stone-700')}>
-                      Map
-                    </button>
-                  </div>
-                </div>
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {(['new', 'active', 'older'] as TimeframeKey[]).map((key) => (
-                    <button
-                      key={key}
-                      onClick={() => {
-                        setRequestedTimeframe(key);
-                        setExpandedJobId(null);
-                      }}
-                      className={clsx(
-                        'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
-                        timeframeState.displayed === key ? 'bg-stone-950 text-white' : 'border border-stone-300 bg-white text-stone-700'
-                      )}
-                    >
-                      {key === 'new' ? 'This Week' : key === 'active' ? 'This Month' : 'Earlier'}
-                    </button>
-                  ))}
-                </div>
-
-                {timeframeState.message ? <div className="mt-4 rounded-2xl bg-amber-400/10 px-4 py-3 text-sm text-amber-100 ring-1 ring-amber-300/20">{timeframeState.message}</div> : null}
+                  </select>
+                </label>
+                <label className="space-y-2 text-sm text-[#d8d8dc]">
+                  <span>Default feed scope</span>
+                  <select value={profile.defaultFeedMode} onChange={(event) => updateProfile('defaultFeedMode', event.target.value as FeedMode)} className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]">
+                    <option value="my-trade">My Trade</option>
+                    <option value="all-jobs">All Jobs</option>
+                  </select>
+                </label>
               </div>
 
-              <details className="group rounded-[24px] border border-white/10 bg-[rgba(15,16,18,0.72)] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.22)] backdrop-blur-xl">
-                <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold text-stone-100">
-                  <span>Refine</span>
-                  <span className="text-xs uppercase tracking-[0.16em] text-stone-400 group-open:hidden">Open</span>
-                  <span className="hidden text-xs uppercase tracking-[0.16em] text-stone-400 group-open:inline">Close</span>
-                </summary>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Sort</span>
-                    <select value={filters.sort} onChange={(event) => setFilters((current) => ({ ...current, sort: event.target.value as DashboardFilters['sort'] }))} className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400">
-                      <option value="newest">Newest</option>
-                      <option value="highest">Highest Value</option>
-                      <option value="lowest">Lowest Value</option>
-                    </select>
-                  </label>
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Budget min</span>
-                    <input value={filters.minBudget} onChange={(event) => setFilters((current) => ({ ...current, minBudget: Number(event.target.value || 0) }))} type="number" className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400" />
-                  </label>
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Budget max</span>
-                    <input value={filters.maxBudget} onChange={(event) => setFilters((current) => ({ ...current, maxBudget: Number(event.target.value || 0) }))} type="number" className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400" />
-                  </label>
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Neighborhood or ZIP</span>
-                    <input value={filters.neighborhood} onChange={(event) => setFilters((current) => ({ ...current, neighborhood: event.target.value }))} type="text" placeholder="East Nashville or 37206" className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400" />
-                  </label>
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <label className="space-y-2 text-sm text-[#d8d8dc]">
+                  <span>Budget min</span>
+                  <input value={profile.budgetMin} onChange={(event) => updateProfile('budgetMin', Number(event.target.value || 0))} type="number" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                </label>
+                <label className="space-y-2 text-sm text-[#d8d8dc]">
+                  <span>Budget max</span>
+                  <input value={profile.budgetMax} onChange={(event) => updateProfile('budgetMax', Number(event.target.value || 0))} type="number" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                </label>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <button onClick={applyProfileBudget} className="rounded-full bg-[#ff3b30] px-4 py-2 text-sm font-semibold text-white active:scale-[0.98]">
+                  Apply budget
+                </button>
+                <button onClick={() => setShowOnboarding(true)} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-[#f5f5f7] active:scale-[0.98]">
+                  How it works
+                </button>
+              </div>
+
+              <details className="mt-6 rounded-[24px] border border-white/8 bg-[#111113] p-4">
+                <summary className="cursor-pointer list-none text-sm font-semibold text-[#f5f5f7]">Debug</summary>
+                <div className="mt-4 grid gap-3 text-sm text-[#d8d8dc] sm:grid-cols-2">
+                  <div className="rounded-2xl bg-white/5 px-4 py-3"><div className="text-[11px] uppercase tracking-[0.16em] text-[#8e8e93]">AI enabled</div><div className="mt-1 font-semibold text-[#f5f5f7]">{payload.debug.aiEnabled ? 'Yes' : 'No'}</div></div>
+                  <div className="rounded-2xl bg-white/5 px-4 py-3"><div className="text-[11px] uppercase tracking-[0.16em] text-[#8e8e93]">API key present</div><div className="mt-1 font-semibold text-[#f5f5f7]">{payload.debug.apiKeyPresent ? 'Yes' : 'No'}</div></div>
+                  <div className="rounded-2xl bg-white/5 px-4 py-3"><div className="text-[11px] uppercase tracking-[0.16em] text-[#8e8e93]">Version</div><div className="mt-1 font-semibold text-[#f5f5f7]">{payload.debug.appVersion}</div></div>
+                  <div className="rounded-2xl bg-white/5 px-4 py-3"><div className="text-[11px] uppercase tracking-[0.16em] text-[#8e8e93]">Visible jobs</div><div className="mt-1 font-semibold text-[#f5f5f7]">{visibleProjects.length}</div></div>
+                  <div className="rounded-2xl bg-white/5 px-4 py-3"><div className="text-[11px] uppercase tracking-[0.16em] text-[#8e8e93]">Stored summaries</div><div className="mt-1 font-semibold text-[#f5f5f7]">{visibleStoredCount}</div></div>
+                  <div className="rounded-2xl bg-white/5 px-4 py-3"><div className="text-[11px] uppercase tracking-[0.16em] text-[#8e8e93]">Summaries needed</div><div className="mt-1 font-semibold text-[#f5f5f7]">{visibleNeedsSummaryCount}</div></div>
+                  <div className="rounded-2xl bg-white/5 px-4 py-3"><div className="text-[11px] uppercase tracking-[0.16em] text-[#8e8e93]">Trade notes needed</div><div className="mt-1 font-semibold text-[#f5f5f7]">{visibleNeedsTradeNoteCount}</div></div>
+                  <div className="rounded-2xl bg-white/5 px-4 py-3"><div className="text-[11px] uppercase tracking-[0.16em] text-[#8e8e93]">Refresh needed</div><div className="mt-1 font-semibold text-[#f5f5f7]">{visibleNeedsRefreshCount}</div></div>
+                  <div className="rounded-2xl bg-white/5 px-4 py-3 sm:col-span-2"><div className="text-[11px] uppercase tracking-[0.16em] text-[#8e8e93]">Last generate action</div><div className="mt-1 font-semibold text-[#f5f5f7]">{payload.debug.lastGenerateActionResult || 'No generate action yet'}</div></div>
+                  <div className="rounded-2xl bg-white/5 px-4 py-3 sm:col-span-2"><div className="text-[11px] uppercase tracking-[0.16em] text-[#8e8e93]">Last regenerate action</div><div className="mt-1 font-semibold text-[#f5f5f7]">{payload.debug.lastRegenerateActionResult || 'No regenerate action yet'}</div></div>
                 </div>
+
                 <div className="mt-4">
-                  <button onClick={applyProfileBudget} className="rounded-full border border-stone-300 px-4 py-2 text-sm font-semibold text-stone-700 active:scale-[0.98]">
-                    Use Profile Budget
-                  </button>
+                  <div className="text-[11px] uppercase tracking-[0.16em] text-[#8e8e93]">Single job tools</div>
+                  <label className="mt-3 flex items-center gap-2 text-sm text-[#d8d8dc]">
+                    <input type="checkbox" checked={debugBypassCache} onChange={(event) => setDebugBypassCache(event.target.checked)} className="rounded border-white/20 bg-white/5" />
+                    Bypass cache on generation
+                  </label>
+                  <div className="mt-2 flex flex-wrap gap-3">
+                    <input value={debugProjectId} onChange={(event) => setDebugProjectId(event.target.value)} type="text" placeholder="Project ID" className="min-w-[180px] flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-[#f5f5f7] outline-none" />
+                    <button onClick={handleRegenerate} disabled={isRegenerating || !debugProjectId.trim()} className={clsx('rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]', isRegenerating || !debugProjectId.trim() ? 'bg-white/10 text-[#636366]' : 'bg-[#ff3b30] text-white')}>
+                      {isRegenerating ? 'Generating…' : 'Generate summary'}
+                    </button>
+                    <button onClick={handleGenerateTradeNote} disabled={isGeneratingTradeNote || !debugProjectId.trim() || !profile.trade} className={clsx('rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]', isGeneratingTradeNote || !debugProjectId.trim() || !profile.trade ? 'bg-white/10 text-[#636366]' : 'border border-white/10 bg-white/5 text-[#f5f5f7]')}>
+                      {isGeneratingTradeNote ? 'Generating note…' : 'Generate trade note'}
+                    </button>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <button onClick={handleGenerateVisibleAi} disabled={isGeneratingVisibleAi || !visibleProjects.length} className={clsx('rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]', isGeneratingVisibleAi || !visibleProjects.length ? 'bg-white/10 text-[#636366]' : 'bg-white text-black')}>
+                      {isGeneratingVisibleAi ? 'Generating summaries…' : 'Generate summaries for visible jobs'}
+                    </button>
+                    <button onClick={handleGenerateVisibleTradeNotes} disabled={isGeneratingVisibleTradeNotes || !visibleProjects.length || !profile.trade} className={clsx('rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]', isGeneratingVisibleTradeNotes || !visibleProjects.length || !profile.trade ? 'bg-white/10 text-[#636366]' : 'border border-white/10 bg-white/5 text-[#f5f5f7]')}>
+                      {isGeneratingVisibleTradeNotes ? 'Generating trade notes…' : 'Generate trade notes for visible jobs'}
+                    </button>
+                    <button onClick={handleRegenerateVisibleAi} disabled={isRegeneratingVisibleAi || !visibleProjects.length} className={clsx('rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]', isRegeneratingVisibleAi || !visibleProjects.length ? 'bg-white/10 text-[#636366]' : 'border border-white/10 bg-white/5 text-[#f5f5f7]')}>
+                      {isRegeneratingVisibleAi ? 'Regenerating content…' : 'Regenerate visible jobs'}
+                    </button>
+                  </div>
+
+                  {visibleGenerationProgress ? (
+                    <div className="mt-4 rounded-2xl bg-white/5 px-4 py-3 text-sm text-[#d8d8dc]">
+                      <div>{visibleGenerationProgress.actionLabel}: {visibleGenerationProgress.processed} / {visibleGenerationProgress.needed} processed</div>
+                      <div className="mt-1">{visibleGenerationProgress.succeeded} completed • {visibleGenerationProgress.failed} failed • batch {visibleGenerationProgress.batchIndex} / {visibleGenerationProgress.batchCount || 0}</div>
+                      <div className="mt-1 text-[#8e8e93]">Status: {visibleGenerationProgress.status}</div>
+                    </div>
+                  ) : null}
+
+                  {regenerateStatus ? <div className="mt-3 text-sm text-[#d8d8dc]">{regenerateStatus}</div> : null}
                 </div>
               </details>
-
-              <div className="relative">
-                <div className={clsx('transition duration-200', jobsView === 'map' ? 'pointer-events-none absolute inset-0 translate-y-2 opacity-0' : 'opacity-100')}>
-                  <div className="space-y-4">
-                    {visibleProjects.map((project) => (
-                      <PermitFeedCard
-                        key={project.id}
-                        project={project}
-                        trade={profile.trade}
-                        contactHref={`/contacts?name=${encodeURIComponent(project.contactName)}&${contactContextQuery}`}
-                        expanded={expandedJobId === project.id}
-                        onToggle={() => setExpandedJobId((current) => (current === project.id ? null : project.id))}
-                      />
-                    ))}
-                    {!visibleProjects.length ? <div className="rounded-[24px] border border-dashed border-stone-300 bg-white/70 px-5 py-12 text-center text-sm text-stone-500">No permits match the current view.</div> : null}
-                  </div>
-                </div>
-
-                <div className={clsx('transition duration-200', jobsView === 'map' ? 'opacity-100' : 'pointer-events-none absolute inset-0 -translate-y-2 opacity-0')}>
-                  <ProjectMap projects={visibleProjects} trade={profile.trade} />
-                </div>
-              </div>
-            </section>
-          ) : null}
-
-          {activeTab === 'builders' ? (
-            <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-                <h2 className="font-display text-3xl text-white">Builders</h2>
-                <p className="mt-1 text-sm text-stone-300">Call and email actions first, with project count and valuation for context.</p>
-                <p className="mt-2 text-xs text-stone-500">Where available, contact information is provided directly from permit records.</p>
-              </div>
-
-              <div className="space-y-4">
-                {visibleContacts.map((contact) => (
-                  <article key={contact.name} className="rounded-[24px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="text-xl font-semibold text-white">{contact.name}</h3>
-                        <p className="mt-2 text-sm text-stone-300">
-                          {contact.projectCount} projects • {formatCurrency(contact.totalValuation)}
-                        </p>
-                        {contact.phone ? <p className="mt-2 text-sm text-stone-200">{contact.phone}</p> : null}
-                        {contact.email ? <p className="mt-1 text-sm text-stone-200">{contact.email}</p> : null}
-                        {!contact.phone && !contact.email ? <p className="mt-2 text-sm text-stone-400">Contact info unavailable</p> : null}
-                      </div>
-                      <a href={`/contacts?name=${encodeURIComponent(contact.name)}&${contactContextQuery}`} className="rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-stone-100 active:scale-[0.98]">
-                        Open
-                      </a>
-                    </div>
-
-                    <div className="mt-4 flex flex-wrap gap-3 text-sm font-semibold">
-                      {contact.phone ? <a href={formatPhoneHref(contact.phone)} className="rounded-full bg-amber-400 px-4 py-2 text-stone-950 active:scale-[0.98]">Call</a> : null}
-                      {contact.email ? <a href={`mailto:${contact.email}`} className="rounded-full border border-white/20 px-4 py-2 text-stone-100 active:scale-[0.98]">Email</a> : null}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ) : null}
-
-          {activeTab === 'profile' ? (
-            <section className="space-y-4">
-              <div className="rounded-[28px] border border-white/10 bg-[rgba(15,16,18,0.8)] p-5 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
-                <h2 className="font-display text-3xl text-white">Profile</h2>
-                <p className="mt-1 text-sm text-stone-300">Local-only profile fields for shaping the app while auth is still out of scope.</p>
-
-                <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Email</span>
-                    <input value={profile.email} onChange={(event) => updateProfile('email', event.target.value)} type="email" className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400" />
-                  </label>
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Username</span>
-                    <input value={profile.username} onChange={(event) => updateProfile('username', event.target.value)} type="text" className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400" />
-                  </label>
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Business name</span>
-                    <input value={profile.businessName} onChange={(event) => updateProfile('businessName', event.target.value)} type="text" className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400" />
-                  </label>
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Phone</span>
-                    <input value={profile.phone} onChange={(event) => updateProfile('phone', event.target.value)} type="tel" className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400" />
-                  </label>
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Selected trade</span>
-                    <select value={profile.trade} onChange={(event) => updateProfile('trade', event.target.value)} className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400">
-                      <option value="">Select your trade</option>
-                      {TRADE_OPTIONS.map((trade) => (
-                        <option key={trade} value={trade}>
-                          {trade}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Default view</span>
-                    <select value={profile.defaultFeedMode} onChange={(event) => updateProfile('defaultFeedMode', event.target.value as FeedMode)} className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400">
-                      <option value="my-trade">My Trade</option>
-                      <option value="all-jobs">All Jobs</option>
-                    </select>
-                  </label>
-                </div>
-
-                <div className="mt-5 grid grid-cols-2 gap-3">
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Budget preference min</span>
-                    <input value={profile.budgetMin} onChange={(event) => updateProfile('budgetMin', Number(event.target.value || 0))} type="number" className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400" />
-                  </label>
-                  <label className="space-y-2 text-sm text-stone-700">
-                    <span>Budget preference max</span>
-                    <input value={profile.budgetMax} onChange={(event) => updateProfile('budgetMax', Number(event.target.value || 0))} type="number" className="w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 outline-none transition focus:border-amber-400" />
-                  </label>
-                </div>
-
-                <div className="mt-5 flex flex-wrap gap-3">
-                  <button
-                    onClick={() => {
-                      setFeedMode(profile.defaultFeedMode);
-                      applyProfileBudget();
-                    }}
-                    className="rounded-full bg-stone-950 px-4 py-2 text-sm font-semibold text-white active:scale-[0.98]"
-                  >
-                    Apply to app
-                  </button>
-                  <button onClick={() => setShowOnboarding(true)} className="rounded-full border border-white/20 px-4 py-2 text-sm font-semibold text-stone-100 active:scale-[0.98]">
-                    How it works
-                  </button>
-                  <div className="rounded-full bg-white/10 px-4 py-2 text-sm text-stone-300">This Week = last 7 days • This Month = 8 to 30 days • Earlier = 30+ days</div>
-                </div>
-
-                <details className="mt-5 rounded-[24px] border border-white/10 bg-black/20 p-4">
-                  <summary className="cursor-pointer list-none text-sm font-semibold text-stone-100">Debug</summary>
-                  <div className="mt-4 grid gap-3 text-sm text-stone-300 sm:grid-cols-2">
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">AI enabled</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.aiEnabled ? 'Yes' : 'No'}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">API key present</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.apiKeyPresent ? 'Yes' : 'No'}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Version</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.appVersion}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last AI call attempted</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.lastAiCallAttempted ? 'Yes' : 'No'}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last AI result source</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.lastAiResultSource}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3 sm:col-span-2">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last AI skip / failure reason</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.lastAiFailureReason}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last cache status</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.lastCacheStatus}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last summary source</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.lastSummarySource}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last trade source</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.lastTradeSource}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Stored AI in current view</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.storedAiCount}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Visible jobs total</div>
-                      <div className="mt-1 font-semibold text-white">{visibleProjects.length}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Stored in visible view</div>
-                      <div className="mt-1 font-semibold text-white">{visibleStoredCount}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Still needed in visible view</div>
-                      <div className="mt-1 font-semibold text-white">{visibleNeedsSummaryCount}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Trade notes needed in visible view</div>
-                      <div className="mt-1 font-semibold text-white">{visibleNeedsTradeNoteCount}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Needs summaries</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.needsSummaryCount}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Needs trade notes</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.needsTradeNoteCount}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Needs refresh</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.needsRefreshCount}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3 sm:col-span-2">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last generate action</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.lastGenerateActionResult || 'No generate action yet'}</div>
-                    </div>
-                    <div className="rounded-2xl bg-white/5 px-4 py-3 sm:col-span-2">
-                      <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Last regenerate action</div>
-                      <div className="mt-1 font-semibold text-white">{payload.debug.lastRegenerateActionResult || 'No regenerate action yet'}</div>
-                    </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <div className="text-[11px] uppercase tracking-[0.16em] text-stone-500">Single job tools</div>
-                    <label className="mt-3 flex items-center gap-2 text-sm text-stone-300">
-                      <input type="checkbox" checked={debugBypassCache} onChange={(event) => setDebugBypassCache(event.target.checked)} className="rounded border-white/20 bg-white/5" />
-                      Bypass cache on generation
-                    </label>
-                    <div className="mt-2 text-xs text-stone-400">Use a project ID here for targeted regeneration while keeping the product UI clean.</div>
-                    <div className="mt-2 flex flex-wrap gap-3">
-                      <input
-                        value={debugProjectId}
-                        onChange={(event) => setDebugProjectId(event.target.value)}
-                        type="text"
-                        placeholder="Project ID"
-                        className="min-w-[180px] flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none"
-                      />
-                      <button
-                        onClick={handleRegenerate}
-                        disabled={isRegenerating || !debugProjectId.trim()}
-                        className={clsx(
-                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
-                          isRegenerating || !debugProjectId.trim() ? 'bg-white/10 text-stone-500' : 'bg-amber-300 text-stone-900'
-                        )}
-                      >
-                        {isRegenerating ? 'Generating…' : 'Generate summary for this permit'}
-                      </button>
-                      <button
-                        onClick={handleGenerateTradeNote}
-                        disabled={isGeneratingTradeNote || !debugProjectId.trim() || !profile.trade}
-                        className={clsx(
-                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
-                          isGeneratingTradeNote || !debugProjectId.trim() || !profile.trade
-                            ? 'bg-white/10 text-stone-500'
-                            : 'border border-white/20 text-stone-100'
-                        )}
-                      >
-                        {isGeneratingTradeNote ? 'Generating note…' : 'Generate trade note'}
-                      </button>
-                    </div>
-                    <div className="mt-4 flex flex-wrap gap-3">
-                      <button
-                        onClick={handleGenerateVisibleAi}
-                        disabled={isGeneratingVisibleAi || !visibleProjects.length}
-                        className={clsx(
-                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
-                          isGeneratingVisibleAi || !visibleProjects.length ? 'bg-white/10 text-stone-500' : 'bg-white text-stone-950'
-                        )}
-                      >
-                        {isGeneratingVisibleAi ? 'Generating summaries…' : 'Generate summaries for visible jobs'}
-                      </button>
-                      <button
-                        onClick={handleGenerateVisibleTradeNotes}
-                        disabled={isGeneratingVisibleTradeNotes || !visibleProjects.length || !profile.trade}
-                        className={clsx(
-                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
-                          isGeneratingVisibleTradeNotes || !visibleProjects.length || !profile.trade
-                            ? 'bg-white/10 text-stone-500'
-                            : 'border border-white/20 text-stone-100'
-                        )}
-                      >
-                        {isGeneratingVisibleTradeNotes ? 'Generating trade notes…' : 'Generate trade notes for visible jobs'}
-                      </button>
-                      <button
-                        onClick={handleRegenerateVisibleAi}
-                        disabled={isRegeneratingVisibleAi || !visibleProjects.length}
-                        className={clsx(
-                          'rounded-full px-4 py-2 text-sm font-semibold transition active:scale-[0.98]',
-                          isRegeneratingVisibleAi || !visibleProjects.length ? 'bg-white/10 text-stone-500' : 'border border-white/20 text-stone-100'
-                        )}
-                      >
-                        {isRegeneratingVisibleAi ? 'Regenerating content…' : 'Regenerate visible jobs'}
-                      </button>
-                    </div>
-                    {visibleGenerationProgress ? (
-                      <div className="mt-3 rounded-2xl bg-white/5 px-4 py-3 text-sm text-stone-200">
-                        <div>
-                          Visible set: {visibleGenerationProgress.totalVisible} jobs • {visibleGenerationProgress.storedBefore} already stored •{' '}
-                          {visibleGenerationProgress.needed} still needed
-                        </div>
-                        <div className="mt-1">
-                          Progress: {visibleGenerationProgress.processed} / {visibleGenerationProgress.needed} processed • {visibleGenerationProgress.succeeded} stored
-                          • {visibleGenerationProgress.failed} failed
-                        </div>
-                        <div className="mt-1">
-                          {visibleGenerationProgress.actionLabel}: batch {visibleGenerationProgress.batchIndex} / {visibleGenerationProgress.batchCount || 0} • Status:{' '}
-                          {visibleGenerationProgress.status}
-                        </div>
-                        <div className="mt-2 text-xs text-stone-400">
-                          Generate fills missing base summaries. Regenerate refreshes stored summaries and current-trade insight content.
-                        </div>
-                      </div>
-                    ) : null}
-                    {regenerateStatus ? <div className="mt-3 text-sm text-stone-300">{regenerateStatus}</div> : null}
-                  </div>
-                </details>
-              </div>
-            </section>
-          ) : null}
-        </div>
+            </div>
+          </section>
+        ) : null}
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-stone-200/80 bg-white/92 px-3 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] pt-3 shadow-[0_-18px_40px_rgba(43,37,20,0.1)] backdrop-blur-xl">
-        <div className="mx-auto grid max-w-3xl grid-cols-4 gap-3">
+      <nav className="fixed inset-x-0 bottom-4 z-50 px-4">
+        <div className="mx-auto flex w-full max-w-md items-center justify-between rounded-[24px] border border-white/10 bg-black/70 px-3 py-3 shadow-[0_22px_60px_rgba(0,0,0,0.48)] backdrop-blur-xl">
           {MOBILE_TABS.map((tab) => (
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
               className={clsx(
-                'rounded-2xl px-3 py-3 text-center text-[11px] font-semibold uppercase tracking-[0.16em] transition active:scale-[0.98]',
-                activeTab === tab.key ? 'bg-stone-950 text-white shadow-[0_10px_30px_rgba(28,25,23,0.18)]' : 'text-stone-500'
+                'flex-1 rounded-[18px] px-3 py-3 text-center text-[11px] font-semibold uppercase tracking-[0.18em] transition active:scale-[0.98]',
+                activeTab === tab.key ? 'bg-[#ff3b30] text-white' : 'text-[#8e8e93]'
               )}
             >
               {tab.label}
@@ -1357,11 +1028,11 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
       </nav>
 
       {showOnboarding && onboardingReady ? (
-        <div className="fixed inset-0 z-50 bg-[rgba(28,25,23,0.46)] px-4 py-6 backdrop-blur-xl">
+        <div className="fixed inset-0 z-[60] bg-black/92 px-4 py-6">
           <div className="mx-auto flex h-full w-full max-w-md flex-col justify-end">
-            <div className="rounded-[32px] border border-white/20 bg-[linear-gradient(180deg,rgba(28,25,23,0.96),rgba(59,48,37,0.96))] p-5 shadow-[0_30px_90px_rgba(18,14,10,0.42)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-white/55">Welcome</div>
-              <div className="mt-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-amber-200">{APP_VERSION}</div>
+            <div className="rounded-[32px] border border-white/10 bg-[#111113] p-5 shadow-[0_30px_90px_rgba(0,0,0,0.6)]">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8e8e93]">BidHammer</div>
+              <div className="mt-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-[#ff3b30]">{APP_VERSION}</div>
               <div
                 ref={onboardingTrackRef}
                 className="mt-4 flex snap-x snap-mandatory gap-4 overflow-x-auto scroll-smooth pb-2"
@@ -1371,8 +1042,8 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                 }}
               >
                 {ONBOARDING_CARDS.map((copy) => (
-                  <div key={copy} className="min-w-full snap-center rounded-[28px] border border-white/12 bg-white/10 p-6 text-white/92 backdrop-blur">
-                    <div className="font-display text-3xl leading-tight">{copy}</div>
+                  <div key={copy} className="min-w-full snap-center rounded-[28px] border border-white/10 bg-[#1c1c1e] p-6 text-[#f5f5f7]">
+                    <div className="text-3xl leading-tight">{copy}</div>
                   </div>
                 ))}
               </div>
@@ -1380,24 +1051,22 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
               <div className="mt-4 flex items-center justify-between">
                 <div className="flex gap-2">
                   {ONBOARDING_CARDS.map((_, index) => (
-                    <div key={index} className={clsx('h-2 rounded-full transition-all', onboardingIndex === index ? 'w-6 bg-amber-300' : 'w-2 bg-white/25')} />
+                    <div key={index} className={clsx('h-2 rounded-full transition-all', onboardingIndex === index ? 'w-6 bg-[#ff3b30]' : 'w-2 bg-white/20')} />
                   ))}
                 </div>
                 {onboardingIndex < ONBOARDING_CARDS.length - 1 ? (
-                  <button onClick={advanceOnboarding} className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-stone-900 active:scale-[0.98]">
+                  <button onClick={advanceOnboarding} className="rounded-full bg-[#ff3b30] px-4 py-2 text-sm font-semibold text-white active:scale-[0.98]">
                     Next
                   </button>
                 ) : null}
               </div>
 
-              <div className="mt-5 rounded-[24px] border border-white/12 bg-white/8 p-4">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">Select your trade</div>
-                <select value={profile.trade} onChange={(event) => updateProfile('trade', event.target.value)} className="mt-3 w-full rounded-2xl border border-white/12 bg-white/10 px-4 py-3 text-sm text-white outline-none">
-                  <option value="" className="text-stone-900">
-                    Select your trade
-                  </option>
+              <div className="mt-5 rounded-[24px] border border-white/10 bg-[#1c1c1e] p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8e8e93]">Select your trade</div>
+                <select value={profile.trade} onChange={(event) => updateProfile('trade', event.target.value)} className="mt-3 w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none">
+                  <option value="">Select your trade</option>
                   {TRADE_OPTIONS.map((trade) => (
-                    <option key={trade} value={trade} className="text-stone-900">
+                    <option key={trade} value={trade}>
                       {trade}
                     </option>
                   ))}
@@ -1407,7 +1076,7 @@ export function DashboardShell({ initialPayload, initialTab = 'home' }: Props) {
                   disabled={!profile.trade || onboardingIndex < ONBOARDING_CARDS.length - 1}
                   className={clsx(
                     'mt-4 w-full rounded-full px-4 py-3 text-sm font-semibold transition active:scale-[0.98]',
-                    profile.trade && onboardingIndex === ONBOARDING_CARDS.length - 1 ? 'bg-amber-300 text-stone-900' : 'bg-white/15 text-white/45'
+                    profile.trade && onboardingIndex === ONBOARDING_CARDS.length - 1 ? 'bg-[#ff3b30] text-white' : 'bg-white/10 text-[#636366]'
                   )}
                 >
                   Start Using the App

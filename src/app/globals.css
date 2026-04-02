@@ -1,63 +1,54 @@
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
-  --background: #efe7db;
-  --ink: #1c1917;
-  --panel: rgba(255, 253, 249, 0.92);
+  color-scheme: dark;
+  --background: #000000;
+  --card: #1c1c1e;
+  --text: #f5f5f7;
+  --muted: #8e8e93;
+  --accent: #ff3b30;
 }
 
 html {
   min-height: 100%;
-  background:
-    radial-gradient(circle at top left, rgba(245, 158, 11, 0.16), transparent 28%),
-    radial-gradient(circle at top right, rgba(120, 113, 108, 0.14), transparent 25%),
-    linear-gradient(180deg, #f5efe6 0%, #ece4d7 48%, #f7f3ec 100%);
+  background: var(--background);
 }
 
 body {
-  @apply text-stone-900 antialiased;
-  background: transparent;
-  font-family: var(--font-sans), sans-serif;
-  position: relative;
-}
-
-body::before {
-  content: '';
-  position: fixed;
-  inset: -24px;
-  background:
-    linear-gradient(rgba(20, 18, 16, 0.48), rgba(20, 18, 16, 0.48)),
-    url('/images/bg-main.jpg') center/cover no-repeat;
-  filter: blur(10px);
-  transform: scale(1.05);
-  z-index: -2;
-}
-
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background: linear-gradient(180deg, rgba(17, 15, 13, 0.18), rgba(17, 15, 13, 0.08));
-  z-index: -1;
-  pointer-events: none;
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--text);
+  font-family: 'Sora', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 a,
 button,
 input,
-select {
+select,
+textarea {
   -webkit-tap-highlight-color: transparent;
 }
 
 .font-display {
-  font-family: var(--font-display), serif;
+  font-family: 'Sora', sans-serif;
 }
 
 .leaflet-container {
-  font-family: var(--font-sans), sans-serif;
+  background: #111113;
+  color: var(--text);
+  font-family: 'Sora', sans-serif;
+}
+
+.leaflet-control-attribution,
+.leaflet-control-zoom a {
+  background: rgba(17, 17, 19, 0.92) !important;
+  color: var(--text) !important;
 }
 
 @keyframes fade_up {
