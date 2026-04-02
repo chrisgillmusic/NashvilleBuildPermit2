@@ -8,3 +8,4 @@ yarn-error.log*
 pnpm-debug.log*
 prisma/migrations
 .DS_Store
+tsconfig.tsbuildinfo
