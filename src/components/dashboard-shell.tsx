@@ -775,10 +775,12 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
               </div>
             </header>
 
-            <div className="space-y-10">
+            <div className="relative space-y-10">
+              <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-16 bg-[linear-gradient(180deg,rgba(0,0,0,0.96)_0%,rgba(0,0,0,0.72)_42%,rgba(0,0,0,0)_100%)]" />
               {feedSections.map((section) => (
                 <section key={section.key} className="space-y-4">
                   <div className="space-y-3">
+                    {section.key === 'new' ? <div className="h-px w-full bg-white/20" /> : null}
                     <div className="flex items-end justify-between gap-3">
                       <div className="flex flex-wrap items-baseline gap-2">
                         <h2 className="text-2xl font-semibold text-[#ff3b30]">{section.title}</h2>
@@ -993,8 +995,8 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
               className={clsx(
                 'flex-1 rounded-[20px] px-3 py-3 text-center text-[11px] font-semibold uppercase tracking-[0.18em] transition duration-150 active:scale-[0.97] active:brightness-95',
                 activeTab === tab.key
-                  ? 'translate-y-[-1px] bg-[rgba(255,59,48,0.92)] text-white shadow-[0_10px_22px_rgba(255,59,48,0.2),0_1px_0_rgba(255,255,255,0.1)_inset]'
-                  : 'bg-[rgba(255,255,255,0.04)] text-[#b7b7bd] shadow-[0_1px_0_rgba(255,255,255,0.04)_inset] hover:bg-[rgba(255,255,255,0.055)]'
+                  ? 'translate-y-[-1px] bg-[rgba(255,59,48,0.92)] text-[#fff5f4] shadow-[0_10px_22px_rgba(255,59,48,0.2),0_1px_0_rgba(255,255,255,0.1)_inset]'
+                  : 'bg-[rgba(255,255,255,0.04)] text-[#ececf1] shadow-[0_1px_0_rgba(255,255,255,0.04)_inset] hover:bg-[rgba(255,255,255,0.055)]'
               )}
             >
               {tab.label}
