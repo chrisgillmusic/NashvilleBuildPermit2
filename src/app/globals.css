@@ -66,16 +66,28 @@ textarea {
 @keyframes card_reveal {
   from {
     opacity: 0;
-    transform: translateY(10px) scale(0.985);
+    transform: translateY(12px) scale(0.985);
   }
 
-  65% {
+  72% {
     opacity: 1;
-    transform: translateY(0) scale(1.003);
+    transform: translateY(0) scale(1.004);
   }
 
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes card_content_reveal {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

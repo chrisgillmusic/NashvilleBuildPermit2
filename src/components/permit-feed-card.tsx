@@ -106,7 +106,8 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
       </button>
 
       {expanded ? (
-        <div className="origin-top animate-[card_reveal_220ms_cubic-bezier(0.22,1,0.36,1)] border-t border-white/8 bg-[linear-gradient(180deg,rgba(22,22,24,0.96)_0%,rgba(17,17,19,1)_100%)] px-5 pb-6 pt-5">
+        <div className="origin-top animate-[card_reveal_380ms_cubic-bezier(0.18,0.88,0.22,1)] border-t border-white/8 bg-[linear-gradient(180deg,rgba(22,22,24,0.96)_0%,rgba(17,17,19,1)_100%)] px-5 pb-6 pt-5">
+          <div className="animate-[card_content_reveal_220ms_cubic-bezier(0.22,1,0.36,1)_45ms_both]">
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#ff3b30]">{project.issueDateLabel}</div>
@@ -175,6 +176,7 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
                 Text
               </a>
             ) : null}
+          </div>
           </div>
         </div>
       ) : null}

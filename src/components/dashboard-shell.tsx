@@ -985,16 +985,16 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
       </main>
 
       <nav className="fixed inset-x-0 bottom-4 z-50 px-4">
-        <div className="mx-auto flex w-full max-w-md items-center justify-between rounded-[26px] border border-white/12 bg-[rgba(17,17,19,0.52)] px-3 py-3 shadow-[0_24px_70px_rgba(0,0,0,0.58),0_0_0_1px_rgba(255,255,255,0.06)_inset,0_0_26px_rgba(255,255,255,0.03)] backdrop-blur-[24px]">
+        <div className="mx-auto flex w-full max-w-md items-center gap-2 rounded-[28px] bg-[linear-gradient(180deg,rgba(255,255,255,0.08)_0%,rgba(255,255,255,0.03)_18%,rgba(20,20,22,0.28)_100%)] px-2.5 py-2.5 shadow-[0_18px_34px_rgba(0,0,0,0.34),0_30px_52px_rgba(0,0,0,0.18)] backdrop-blur-[12px]">
           {MOBILE_TABS.map((tab) => (
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
               className={clsx(
-                'flex-1 rounded-[18px] px-3 py-3 text-center text-[11px] font-semibold uppercase tracking-[0.18em] transition duration-150 active:scale-[0.98]',
+                'flex-1 rounded-[20px] px-3 py-3 text-center text-[11px] font-semibold uppercase tracking-[0.18em] transition duration-150 active:scale-[0.97] active:brightness-95',
                 activeTab === tab.key
-                  ? 'bg-[#ff3b30] text-white shadow-[0_12px_24px_rgba(255,59,48,0.22)]'
-                  : 'text-[#8e8e93] hover:bg-white/[0.03]'
+                  ? 'translate-y-[-1px] bg-[rgba(255,59,48,0.92)] text-white shadow-[0_10px_22px_rgba(255,59,48,0.2),0_1px_0_rgba(255,255,255,0.1)_inset]'
+                  : 'bg-[rgba(255,255,255,0.04)] text-[#b7b7bd] shadow-[0_1px_0_rgba(255,255,255,0.04)_inset] hover:bg-[rgba(255,255,255,0.055)]'
               )}
             >
               {tab.label}
