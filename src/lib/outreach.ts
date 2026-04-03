@@ -60,12 +60,14 @@ function firstName(value: string): string {
 }
 
 function buildSignature(profile: OutreachProfile): string {
+  const nameLine = [clean(profile.fullName), clean(profile.businessName)].filter(Boolean).join(' – ');
+  const contactLine = [clean(profile.phone), clean(profile.email)].filter(Boolean).join(' | ');
   const lines = [
-    [clean(profile.fullName), clean(profile.businessName)].filter(Boolean).join(' - '),
-    [clean(profile.phone), clean(profile.email)].filter(Boolean).join(' | ')
+    nameLine,
+    contactLine
   ].filter(Boolean);
 
-  return lines.join('\n');
+  return lines.join('\r\n');
 }
 
 function encodeMailtoPart(value: string): string {
@@ -111,7 +113,7 @@ export function buildProjectOutreachMailto(project: PermitProject, profile: Outr
     buildSignature(profile)
   ]
     .filter(Boolean)
-    .join('\n');
+    .join('\r\n');
 
   return buildMailto(email, subject, body);
 }
@@ -135,7 +137,7 @@ export function buildContactOutreachMailto(contact: ActiveContact, profile: Outr
     buildSignature(profile)
   ]
     .filter(Boolean)
-    .join('\n');
+    .join('\r\n');
 
   return buildMailto(email, subject, body);
 }

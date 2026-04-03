@@ -22,6 +22,65 @@ function normalizeTradeValue(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function normalizeSearchText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function expandKeywordVariants(keyword: string): string[] {
+  const normalized = normalizeSearchText(keyword);
+  if (!normalized) return [];
+
+  const variants = new Set<string>([normalized]);
+  const words = normalized.split(' ');
+
+  if (normalized === 'framing') {
+    variants.add('frame');
+    variants.add('rough framing');
+    variants.add('wood framing');
+    variants.add('metal framing');
+  }
+
+  if (normalized === 'drywall') {
+    variants.add('gypsum');
+    variants.add('gyp');
+  }
+
+  if (normalized === 'electrical') {
+    variants.add('electric');
+  }
+
+  if (normalized === 'plumbing') {
+    variants.add('plumb');
+  }
+
+  if (normalized === 'roofing') {
+    variants.add('roof');
+  }
+
+  for (const word of words) {
+    variants.add(word);
+    if (word.endsWith('ing') && word.length > 4) variants.add(word.slice(0, -3));
+    if (word.endsWith('s') && word.length > 3) variants.add(word.slice(0, -1));
+  }
+
+  return [...variants].filter(Boolean);
+}
+
+function haystackMatchesKeywords(haystack: string, keywords: string[]): boolean {
+  const normalizedHaystack = normalizeSearchText(haystack);
+  if (!normalizedHaystack) return false;
+
+  return keywords.some((keyword) => {
+    const variants = expandKeywordVariants(keyword);
+    return variants.some((variant) => normalizedHaystack.includes(variant) || variant.includes(normalizedHaystack));
+  });
+}
+
 function tradeKeywordMap(trade: string): string[] {
   const normalized = normalizeTradeValue(trade);
 
@@ -76,8 +135,10 @@ export function projectMatchesTrade(project: PermitProject, trade: string): bool
   }
 
   const keywords = tradeKeywordMap(trade);
-  const haystack = `${project.likelyTrades.join(' ')} ${project.tradeSummary} ${project.whyItMatters} ${project.permitType} ${project.permitSubtype} ${project.purpose}`.toLowerCase();
-  return keywords.some((keyword) => haystack.includes(keyword));
+  const haystack = `${project.likelyTrades.join(' ')} ${project.tradeSummary} ${project.whyItMatters} ${project.permitType} ${project.permitSubtype} ${project.purpose} ${project.readableSummary}`.toLowerCase();
+
+  if (haystackMatchesKeywords(haystack, keywords)) return true;
+  return haystackMatchesKeywords(haystack, [normalized]);
 }
 
 export function buildTradeRelevance(project: PermitProject, trade: string): string {

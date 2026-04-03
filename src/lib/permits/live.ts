@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { format, isValid, parseISO, subDays } from 'date-fns';
+import { differenceInCalendarDays, format, isValid, parseISO, subDays } from 'date-fns';
 import { access, readFile } from 'fs/promises';
 import path from 'path';
 import {
@@ -935,7 +935,7 @@ function sanitizeFilters(input?: Partial<DashboardFilters>): DashboardFilters {
   const defaults = getDefaultFilters();
   return {
     minBudget: input?.minBudget ?? defaults.minBudget,
-    maxBudget: input?.maxBudget ?? defaults.maxBudget,
+    maxBudget: defaults.maxBudget,
     dateFrom: input?.dateFrom || defaults.dateFrom,
     dateTo: input?.dateTo || defaults.dateTo,
     permitType: input?.permitType || '',
@@ -946,7 +946,7 @@ function sanitizeFilters(input?: Partial<DashboardFilters>): DashboardFilters {
 }
 
 function matchesFilters(project: PermitProject, filters: DashboardFilters): boolean {
-  if (project.valuation < filters.minBudget || project.valuation > filters.maxBudget) return false;
+  if (project.valuation < filters.minBudget) return false;
 
   const issueDate = parseISO(project.issueDate);
   const from = filters.dateFrom ? parseISO(`${filters.dateFrom}T00:00:00.000Z`) : null;
@@ -993,12 +993,15 @@ function sortProjects(projects: PermitProject[], sort: DashboardFilters['sort'])
 }
 
 function summarize(projects: PermitProject[]): SummaryStats {
-  const recentThreshold = subDays(new Date(), 30);
+  const today = new Date();
 
   return {
     totalProjects: projects.length,
     totalValuation: projects.reduce((sum, project) => sum + project.valuation, 0),
-    recentPermits: projects.filter((project) => parseISO(project.issueDate) >= recentThreshold).length,
+    recentPermits: projects.filter((project) => {
+      const issued = parseISO(project.issueDate);
+      return isValid(issued) && differenceInCalendarDays(today, issued) <= 30;
+    }).length,
     activeContacts: new Set(projects.map((project) => project.contactName).filter((name) => name && name !== 'Contact not listed')).size
   };
 }

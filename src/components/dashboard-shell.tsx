@@ -1,7 +1,7 @@
 'use client';
 
 import clsx from 'clsx';
-import { format, formatDistanceToNowStrict, isAfter, parseISO, subDays } from 'date-fns';
+import { differenceInCalendarDays, format, formatDistanceToNowStrict, isValid, parseISO } from 'date-fns';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { formatCurrency, formatPhone } from '@/lib/format';
 import { buildContactOutreachMailto, buildProjectOutreachMailto, OUTREACH_TEMPLATE_COUNT } from '@/lib/outreach';
@@ -153,18 +153,16 @@ function isProfileComplete(profile: UserProfile): boolean {
 function projectsForTimeframe(projects: PermitProject[], timeframe: TimeframeKey): PermitProject[] {
   const now = new Date();
 
-  if (timeframe === 'new') {
-    return projects.filter((project) => isAfter(parseISO(project.issueDate), subDays(now, 7)));
-  }
+  return projects.filter((project) => {
+    const issued = parseISO(project.issueDate);
+    if (!isValid(issued)) return false;
 
-  if (timeframe === 'active') {
-    return projects.filter((project) => {
-      const issued = parseISO(project.issueDate);
-      return isAfter(issued, subDays(now, 30)) && !isAfter(issued, subDays(now, 7));
-    });
-  }
+    const ageInDays = differenceInCalendarDays(now, issued);
 
-  return projects.filter((project) => !isAfter(parseISO(project.issueDate), subDays(now, 30)));
+    if (timeframe === 'new') return ageInDays >= 0 && ageInDays <= 7;
+    if (timeframe === 'active') return ageInDays > 7 && ageInDays <= 30;
+    return ageInDays > 30;
+  });
 }
 
 function buildHeaderSummary(trade: string): string {
@@ -956,11 +954,11 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                       </div>
                     ) : (
                       <img
-                        src="/brand/bh-logo.png"
+                        src="/brand/bidhammer-logo-main.png"
                         alt="BidHammer"
-                        width={148}
-                        height={52}
-                        className="h-auto w-[132px] object-contain sm:w-[148px]"
+                        width={176}
+                        height={62}
+                        className="h-auto w-[148px] object-contain sm:w-[176px]"
                         onError={() => setLogoFallback(true)}
                       />
                     )}
