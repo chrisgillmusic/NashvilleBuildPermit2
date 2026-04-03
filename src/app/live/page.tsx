@@ -79,7 +79,7 @@ export default async function LivePage({
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Live Intelligence Mode</h1>
-          <p className="text-sm text-slate-700">Filter current commercial Nashville projects by timing, valuation, subtype, and GC/contact activity.</p>
+          <p className="text-sm text-slate-700">Filter current commercial Jacksonville projects by timing, valuation, subtype, and GC/contact activity.</p>
         </div>
         <Link className="text-sm font-semibold text-amber-700 underline" href="/admin">Admin</Link>
       </header>

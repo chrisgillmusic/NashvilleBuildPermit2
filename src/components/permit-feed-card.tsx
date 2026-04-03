@@ -7,6 +7,7 @@ import type { PermitProject } from '@/lib/permits/types';
 type Props = {
   project: PermitProject;
   trade?: string;
+  emailHref?: string | null;
   expanded: boolean;
   onToggle: () => void;
 };
@@ -35,7 +36,7 @@ function placeholderImageForProject(project: PermitProject): string {
   return PLACEHOLDER_IMAGES[Math.abs(seed) % PLACEHOLDER_IMAGES.length];
 }
 
-export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
+export function PermitFeedCard({ project, trade, emailHref, expanded, onToggle }: Props) {
   const summaryText = project.readableSummary || 'No project summary listed on the permit.';
   const insightText = buildVisibleInsight(project, trade || '');
   const hasContactActions = Boolean(project.contactPhone || project.contactEmail);
@@ -203,7 +204,7 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
               ) : null}
               {project.contactEmail ? (
                 <a
-                  href={`mailto:${project.contactEmail}`}
+                  href={emailHref || `mailto:${project.contactEmail}`}
                   className="rounded-full border border-white/12 bg-white/5 px-5 py-3 text-sm font-semibold text-[#f5f5f7] transition-transform duration-150 ease-out active:scale-[0.98]"
                 >
                   Email

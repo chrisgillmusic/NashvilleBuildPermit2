@@ -1,6 +1,8 @@
 import 'server-only';
 
 import { format, isValid, parseISO, subDays } from 'date-fns';
+import { access, readFile } from 'fs/promises';
+import path from 'path';
 import {
   buildBaseSummaryPromptForDebug,
   clearAiNarrativeCache,
@@ -18,57 +20,103 @@ import {
   type StoredTradeNote,
   type TruthStageResult
 } from './ai';
+import { JACKSONVILLE_SNAPSHOT, type JacksonvilleSnapshotRecord } from './jacksonville-snapshot';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject, SummaryStats } from './types';
 
-const FEATURE_URL =
-  process.env.ARCGIS_FEATURE_URL ||
-  'https://services2.arcgis.com/HdTo6HJqh92wn4D8/arcgis/rest/services/Building_Permits_Issued_2/FeatureServer/0/query';
+const JAX_API_BASE =
+  process.env.JAX_PERMITS_API_URL ||
+  'https://jaxepicsapi.coj.net/api';
 
 const CACHE_TTL_MS = 1000 * 60 * 10;
-const OBJECT_ID_CHUNK = 200;
 const REQUEST_RETRIES = 4;
-const CONCURRENCY = 6;
+const CONCURRENCY = 4;
 const SUMMARY_BATCH_SIZE = 5;
 const SUMMARY_BATCH_CONCURRENCY = 2;
 const CONTENT_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 13 • Summary First';
+const JAX_SEARCH_TERMS = ['MAIN', 'ATLANTIC', 'BEACH', 'PHILIPS', 'SAN JOSE', 'BAYMEADOWS', 'UNIVERSITY', 'BLANDING', 'DUNN', 'ROOSEVELT'];
+const JAX_SEARCH_PAGE_SIZE = 20;
+const JAX_MAX_SOURCE_PROJECTS = 45;
+const JACKSONVILLE_JSON_PATH = path.join(process.cwd(), 'src/data/jacksonville-permits.json');
 
-type ArcgisFeature = {
-  attributes: Record<string, unknown>;
+type JacksonvilleSearchItem = {
+  title: string;
+  description: string;
+  key: string;
+  link?: string;
+  obj?: {
+    Primary?: boolean | null;
+    PermitType?: string | null;
+    ProposedUse?: string | null;
+    StructureType?: string | null;
+    WorkType?: string | null;
+    Status?: string | null;
+    DateIssued?: string | null;
+    Address?: string | null;
+    PropertyKey?: string | null;
+  };
 };
 
-type ArcgisIdsResponse = {
-  objectIds?: number[];
+type JacksonvilleSearchResponse = {
+  values?: JacksonvilleSearchItem[];
+  count?: number;
+  page?: number;
+  pageSize?: number;
+  sortActive?: string;
+  sortDirection?: string;
 };
 
-type ArcgisFeatureResponse = {
-  features?: ArcgisFeature[];
+type JacksonvillePermitDetail = Record<string, unknown> & {
+  PermitId?: number;
+  FullPermitNumber?: string;
+  PermitTypeDescription?: string;
+  StatusDescription?: string;
+  ProposedUseDescription?: string | null;
+  StructureTypeDescription?: string | null;
+  WorkTypeDescription?: string | null;
+  DateIssued?: string | null;
+  DateEntered?: string | null;
+  TotalCost?: number | null;
+  WorkDescription?: string | null;
+  PropertyKey?: string | null;
+  Address?: {
+    FullAddress?: string | null;
+    BaseAddress?: string | null;
+    City?: string | null;
+    State?: string | null;
+    ZipCode?: string | null;
+    Neighborhood?: string | null;
+    Latitude?: number | null;
+    Longitude?: number | null;
+    CouncilDistrict?: string | number | null;
+    CensusTract?: string | null;
+    Re?: string | null;
+  } | null;
+  PropertyOwner?: Record<string, unknown> | null;
+  PermitCompanies?: Array<Record<string, unknown>> | null;
+  PermitWorkSubTypes?: Array<{ WorkSubTypeDescription?: string | null }> | null;
+};
+
+type JacksonvilleJsonRecord = {
+  id?: string;
+  city?: string;
+  source?: string;
+  address?: string;
+  type?: string;
+  description?: string;
+  value?: number | string | null;
+  dateIssued?: string;
+  contact?: string;
+  phone?: string | null;
+  email?: string | null;
+  occupancy?: string;
+  permitNumber?: string;
+  status?: string;
+  raw?: Record<string, unknown>;
 };
 
 type CacheValue = {
   projects: PermitProject[];
   fetchedAt: number;
-};
-
-const NASHVILLE_CITY_TERMS = new Set(['NASHVILLE', 'ANTIOCH', 'MADISON', 'HERMITAGE', 'OLD HICKORY', 'GOODLETTSVILLE']);
-
-const ZIP_NEIGHBORHOODS: Record<string, string> = {
-  '37203': 'Midtown',
-  '37204': '12 South / Melrose',
-  '37205': 'Belle Meade / West End',
-  '37206': 'East Nashville',
-  '37207': 'North Nashville',
-  '37208': 'Germantown / North Gulch',
-  '37209': 'The Nations / Charlotte',
-  '37210': 'Wedgewood-Houston / Berry Hill',
-  '37211': 'South Nashville',
-  '37212': 'Hillsboro Village / Belmont',
-  '37213': 'Downtown East',
-  '37214': 'Donelson',
-  '37215': 'Green Hills',
-  '37216': 'Inglewood',
-  '37217': 'Airport / Una',
-  '37218': 'Bordeaux',
-  '37219': 'Downtown Core'
 };
 
 let cache: CacheValue | null = null;
@@ -78,29 +126,49 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchJson<T>(params: URLSearchParams, attempt = 0): Promise<T> {
-  const response = await fetch(`${FEATURE_URL}?${params.toString()}`, {
-    headers: { Accept: 'application/json' },
+function buildApiUrl(path: string, params?: URLSearchParams): string {
+  const normalizedBase = JAX_API_BASE.replace(/\/+$/, '');
+  return `${normalizedBase}/${path.replace(/^\/+/, '')}${params ? `?${params.toString()}` : ''}`;
+}
+
+async function readJacksonvilleJsonRecords(): Promise<JacksonvilleJsonRecord[] | null> {
+  try {
+    await access(JACKSONVILLE_JSON_PATH);
+    const raw = await readFile(JACKSONVILLE_JSON_PATH, 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as JacksonvilleJsonRecord[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchJson<T>(url: string, init?: RequestInit, attempt = 0): Promise<T> {
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      Accept: 'application/json',
+      ...(init?.headers || {})
+    },
     cache: 'no-store'
   });
 
   if (!response.ok) {
     if (attempt >= REQUEST_RETRIES) {
-      throw new Error(`ArcGIS request failed with status ${response.status}`);
+      throw new Error(`Jacksonville permit request failed with status ${response.status}`);
     }
 
     await sleep(400 * (attempt + 1));
-    return fetchJson<T>(params, attempt + 1);
+    return fetchJson<T>(url, init, attempt + 1);
   }
 
   const data = (await response.json()) as T & { error?: { message?: string } };
   if (data && typeof data === 'object' && 'error' in data && data.error) {
     if (attempt >= REQUEST_RETRIES) {
-      throw new Error(data.error.message || 'ArcGIS returned an error');
+      throw new Error(data.error.message || 'Jacksonville permit API returned an error');
     }
 
     await sleep(400 * (attempt + 1));
-    return fetchJson<T>(params, attempt + 1);
+    return fetchJson<T>(url, init, attempt + 1);
   }
 
   return data;
@@ -130,97 +198,70 @@ async function mapWithConcurrency<T, R>(items: T[], worker: (item: T) => Promise
   return results;
 }
 
-async function fetchAllFeatures(): Promise<ArcgisFeature[]> {
-  const idsParams = new URLSearchParams({
-    where: '1=1',
-    returnIdsOnly: 'true',
-    f: 'json'
-  });
-  const idsData = await fetchJson<ArcgisIdsResponse>(idsParams);
-  const objectIds = (idsData.objectIds || []).sort((left, right) => left - right);
-  const chunks = chunk(objectIds, OBJECT_ID_CHUNK);
-
-  const responses = await mapWithConcurrency(
-    chunks,
-    async (ids) => {
-      const params = new URLSearchParams({
-        objectIds: ids.join(','),
-        outFields: '*',
-        returnGeometry: 'false',
-        f: 'json'
-      });
-      const data = await fetchJson<ArcgisFeatureResponse>(params);
-      return data.features || [];
-    },
-    CONCURRENCY
-  );
-
-  return responses.flat();
-}
-
-function getString(attributes: Record<string, unknown>, key: string): string {
-  const value = attributes[key];
+function getText(value: unknown): string {
   if (value === undefined || value === null) return '';
   return String(value).trim();
 }
 
-function getNumber(attributes: Record<string, unknown>, key: string): number | null {
-  const value = attributes[key];
+function getNumeric(value: unknown): number | null {
   if (value === undefined || value === null || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function getIssueDate(attributes: Record<string, unknown>): Date | null {
-  const raw = attributes.Date_Issued;
-  if (raw === undefined || raw === null || raw === '') return null;
-
-  if (typeof raw === 'number') {
-    const date = new Date(raw);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  const date = new Date(String(raw));
+function parseIssueDate(value: unknown): Date | null {
+  if (!value) return null;
+  const date = new Date(String(value));
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function isCommercial(attributes: Record<string, unknown>): boolean {
-  const permitType = getString(attributes, 'Permit_Type_Description').toLowerCase();
-  const permitSubtype = getString(attributes, 'Permit_Subtype_Description').toLowerCase();
-  const purpose = getString(attributes, 'Purpose').toLowerCase();
+function isCommercialSearchResult(result: JacksonvilleSearchItem): boolean {
+  const permitType = getText(result.obj?.PermitType).toLowerCase();
+  const proposedUse = getText(result.obj?.ProposedUse).toLowerCase();
+  const structureType = getText(result.obj?.StructureType).toLowerCase();
+  const workType = getText(result.obj?.WorkType).toLowerCase();
+  const description = getText(result.description).toLowerCase();
 
-  if (permitType.includes('residential') || permitSubtype.includes('residential')) return false;
-  if (permitType.includes('commercial')) return true;
+  if (permitType.includes('right of way')) return false;
+  if (proposedUse.includes('residential') && !proposedUse.includes('non-residential')) return false;
+  if (proposedUse.includes('non-residential')) return true;
 
-  return ['office', 'retail', 'restaurant', 'school', 'hospital', 'warehouse', 'industrial', 'medical'].some((term) =>
-    `${permitSubtype} ${purpose}`.includes(term)
+  return ['restaurant', 'retail', 'office', 'warehouse', 'church', 'medical', 'service station', 'industrial', 'school', 'hotel', 'utilities'].some(
+    (term) => `${permitType} ${structureType} ${workType} ${description}`.includes(term)
   );
 }
 
-function isNashvilleArea(attributes: Record<string, unknown>): boolean {
-  const city = getString(attributes, 'City').toUpperCase();
-  if (city && NASHVILLE_CITY_TERMS.has(city)) return true;
-
-  const zip = getString(attributes, 'ZIP');
-  return zip in ZIP_NEIGHBORHOODS;
+function inferNeighborhood(neighborhood: string, zip: string, address: string): string {
+  if (neighborhood) return neighborhood;
+  if (zip) return `ZIP ${zip}`;
+  return address ? 'Jacksonville Corridor' : 'Jacksonville Area';
 }
 
-function inferNeighborhood(zip: string, address: string, purpose: string): string {
-  if (zip && ZIP_NEIGHBORHOODS[zip]) return ZIP_NEIGHBORHOODS[zip];
+async function searchJacksonvillePermits(term: string): Promise<JacksonvilleSearchItem[]> {
+  const params = new URLSearchParams({
+    searchTerm: term,
+    page: '1',
+    pageSize: String(JAX_SEARCH_PAGE_SIZE),
+    sortActive: 'DateIssued',
+    sortDirection: 'desc'
+  });
 
-  const haystack = `${address} ${purpose}`.toLowerCase();
-  if (haystack.includes('germantown')) return 'Germantown';
-  if (haystack.includes('the nations')) return 'The Nations';
-  if (haystack.includes('green hills')) return 'Green Hills';
-  if (haystack.includes('donelson')) return 'Donelson';
-  if (haystack.includes('east nashville')) return 'East Nashville';
+  const data = await fetchJson<JacksonvilleSearchResponse>(buildApiUrl('Searches/Permits/AddressSearch', params), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: ''
+  });
 
-  return zip ? `ZIP ${zip}` : 'Nashville Area';
+  return (data.values || []).filter(isCommercialSearchResult);
+}
+
+async function fetchJacksonvillePermitDetail(id: string): Promise<JacksonvillePermitDetail> {
+  return fetchJson<JacksonvillePermitDetail>(buildApiUrl(`Permits/${id}`));
 }
 
 function buildMapsUrl(address: string, city: string, state: string, zip: string): string {
   const query = [address, city, state, zip].filter(Boolean).join(', ');
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query || 'Nashville TN')}`;
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query || 'Jacksonville FL')}`;
 }
 
 function dedupeTrades(trades: string[]): string[] {
@@ -234,6 +275,21 @@ function toSentenceCase(value: string): string {
     .toLowerCase()
     .replace(/\b(sf|hvac|mep|poc)\b/g, (match) => match.toUpperCase())
     .replace(/(^\w|\.\s+\w)/g, (match) => match.toUpperCase());
+}
+
+function toAddressCase(value: string): string {
+  const normalized = getText(value);
+  if (!normalized) return '';
+
+  return normalized
+    .toLowerCase()
+    .replace(/\b\w/g, (match) => match.toUpperCase())
+    .replace(/\bNw\b/g, 'NW')
+    .replace(/\bNe\b/g, 'NE')
+    .replace(/\bSw\b/g, 'SW')
+    .replace(/\bSe\b/g, 'SE')
+    .replace(/\bPo\b/g, 'PO')
+    .replace(/\bUs\b/g, 'US');
 }
 
 function normalizePermitText(value: string): string {
@@ -374,36 +430,276 @@ function deriveNotes(permitType: string, permitSubtype: string, purpose: string)
   return { whyItMatters, likelyTrades: dedupeTrades(trades) };
 }
 
-function toProject(feature: ArcgisFeature): PermitProject | null {
-  const attributes = feature.attributes;
-  if (!isCommercial(attributes) || !isNashvilleArea(attributes)) return null;
+function normalizeAddressLine(detail: JacksonvillePermitDetail, fallback: string): string {
+  const baseAddress = getText(detail.Address?.BaseAddress);
+  if (baseAddress) return toAddressCase(baseAddress);
 
-  const issueDate = getIssueDate(attributes);
+  const fullAddress = getText(detail.Address?.FullAddress);
+  if (fullAddress) {
+    return toAddressCase(
+      fullAddress
+        .replace(/\s+JACKSONVILLE,?\s+FL\s+\d{5}(?:-\d{4})?$/i, '')
+        .replace(/\s+FL\s+\d{5}(?:-\d{4})?$/i, '')
+        .trim()
+    );
+  }
+
+  return toAddressCase(fallback);
+}
+
+function getPrimaryCompany(detail: JacksonvillePermitDetail): Record<string, unknown> | null {
+  const companies = Array.isArray(detail.PermitCompanies) ? detail.PermitCompanies : [];
+  return companies.find((company) => company.IsPrimary) || companies[0] || null;
+}
+
+function getCompanyName(detail: JacksonvillePermitDetail): string {
+  const company = getPrimaryCompany(detail);
+  const companyUser = company?.Company as Record<string, unknown> | undefined;
+  const contractor = company?.Contractor as Record<string, unknown> | undefined;
+  const owner = detail.PropertyOwner as Record<string, unknown> | undefined;
+
+  return (
+    getText(companyUser?.BusinessName) ||
+    getText(companyUser?.DisplayName) ||
+    getText(contractor?.DisplayName) ||
+    getText(owner?.DisplayName) ||
+    'Contact not listed'
+  );
+}
+
+function getPhoneFromUser(user?: Record<string, unknown>): string | null {
+  const directPhone = getText(user?.Phone);
+  if (directPhone && directPhone !== '0') return directPhone;
+
+  const phones = Array.isArray(user?.UserPhoneNumbers) ? user.UserPhoneNumbers : [];
+  for (const entry of phones) {
+    const number = getText((entry as Record<string, unknown>)?.PhoneNumber && (entry as { PhoneNumber?: Record<string, unknown> }).PhoneNumber?.Number);
+    if (number) return number;
+  }
+
+  return null;
+}
+
+function getCompanyPhone(detail: JacksonvillePermitDetail): string | null {
+  const company = getPrimaryCompany(detail);
+  const companyUser = company?.Company as Record<string, unknown> | undefined;
+  const contractor = company?.Contractor as Record<string, unknown> | undefined;
+  const owner = detail.PropertyOwner as Record<string, unknown> | undefined;
+
+  return getPhoneFromUser(companyUser) || getPhoneFromUser(contractor) || getPhoneFromUser(owner);
+}
+
+function getCompanyEmail(detail: JacksonvillePermitDetail): string | null {
+  const company = getPrimaryCompany(detail);
+  const companyUser = company?.Company as Record<string, unknown> | undefined;
+  const contractor = company?.Contractor as Record<string, unknown> | undefined;
+  const owner = detail.PropertyOwner as Record<string, unknown> | undefined;
+
+  return getText(companyUser?.Email) || getText(contractor?.Email) || getText(owner?.Email) || null;
+}
+
+function buildJacksonvillePurpose(detail: JacksonvillePermitDetail, result: JacksonvilleSearchItem): string {
+  const rawWorkDescription = getText(detail.WorkDescription);
+  if (rawWorkDescription) return rawWorkDescription;
+
+  const permitType = getText(detail.PermitTypeDescription || result.obj?.PermitType);
+  const workType = getText(detail.WorkTypeDescription || result.obj?.WorkType);
+  const structureType = getText(detail.StructureTypeDescription || result.obj?.StructureType);
+  const proposedUse = getText(detail.ProposedUseDescription || result.obj?.ProposedUse);
+  const address = normalizeAddressLine(detail, getText(result.obj?.Address));
+
+  return [permitType, proposedUse, workType, structureType ? `for ${structureType}` : '', address ? `at ${address}` : '']
+    .filter(Boolean)
+    .join(' ');
+}
+
+function projectFromSnapshot(record: JacksonvilleSnapshotRecord): PermitProject {
+  const purpose = cleanPurposeText(record.purpose) || record.purpose;
+  const readableSummary = buildReadableSummary(record.permitSubtype || record.permitType, purpose);
+  const { whyItMatters, likelyTrades } = deriveNotes(record.permitType, record.permitSubtype, purpose);
+
+  return {
+    id: record.id,
+    objectId: Number(record.id),
+    permitNumber: record.permitNumber,
+    permitType: record.permitType,
+    permitSubtype: record.permitSubtype,
+    address: toAddressCase(record.address),
+    city: record.city,
+    state: record.state,
+    zip: record.zip,
+    neighborhood: record.neighborhood,
+    contactName: record.contactName || 'Contact not listed',
+    contactPhone: record.contactPhone,
+    contactEmail: record.contactEmail,
+    rawPurpose: record.purpose,
+    purpose,
+    readableSummary,
+    tradeSummary: '',
+    valuation: record.valuation,
+    issueDate: record.issueDate,
+    issueDateLabel: format(parseISO(record.issueDate), 'MMM d, yyyy'),
+    mapsUrl: buildMapsUrl(record.address, record.city, record.state, record.zip),
+    whyItMatters,
+    likelyTrades,
+    isTradeRelevant: null,
+    summarySource: 'fallback',
+    tradeSource: 'fallback',
+    coordinates: {
+      lat: record.lat,
+      lon: record.lon
+    },
+    rawFields: {
+      'Permit #': record.permitNumber,
+      'Permit type': record.permitType || 'N/A',
+      'Permit subtype': record.permitSubtype || 'N/A',
+      Address: record.address || 'N/A',
+      City: record.city || 'N/A',
+      State: record.state || 'N/A',
+      ZIP: record.zip || 'N/A',
+      Neighborhood: record.neighborhood || 'N/A',
+      Contact: record.contactName || 'N/A',
+      'Contact phone': record.contactPhone || 'N/A',
+      'Contact email': record.contactEmail || 'N/A',
+      Purpose: purpose || 'N/A',
+      'Estimated valuation': record.valuation
+        ? record.valuation.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+        : 'N/A',
+      'Issue date': format(parseISO(record.issueDate), 'MMM d, yyyy'),
+      Latitude: String(record.lat),
+      Longitude: String(record.lon)
+    }
+  };
+}
+
+function inferPermitType(type: string): string {
+  const parts = type.split('/').map((part) => part.trim()).filter(Boolean);
+  return parts[0] || 'Permit';
+}
+
+function inferPermitSubtype(type: string): string {
+  const parts = type.split('/').map((part) => part.trim()).filter(Boolean);
+  return parts.slice(1).join(', ');
+}
+
+function inferNeighborhoodFromJson(record: JacksonvilleJsonRecord): string {
+  const rawDetail = (record.raw?.detail as { Address?: { Neighborhood?: string | null } } | undefined)?.Address;
+  return getText(rawDetail?.Neighborhood) || 'Jacksonville Area';
+}
+
+function inferZipFromJson(record: JacksonvilleJsonRecord): string {
+  const rawDetail = (record.raw?.detail as { Address?: { ZipCode?: string | null } } | undefined)?.Address;
+  return getText(rawDetail?.ZipCode);
+}
+
+function inferCoordinatesFromJson(record: JacksonvilleJsonRecord): { lat: number | null; lon: number | null } {
+  const rawDetail =
+    (record.raw?.detail as { Address?: { Latitude?: number | null; Longitude?: number | null } } | undefined)?.Address;
+
+  return {
+    lat: getNumeric(rawDetail?.Latitude),
+    lon: getNumeric(rawDetail?.Longitude)
+  };
+}
+
+function projectFromJsonRecord(record: JacksonvilleJsonRecord): PermitProject | null {
+  const id = getText(record.id);
+  const issueDate = parseIssueDate(record.dateIssued);
+  if (!id || !issueDate) return null;
+
+  const permitType = inferPermitType(getText(record.type));
+  const permitSubtype = inferPermitSubtype(getText(record.type));
+  const rawPurpose = getText(record.description);
+  const purpose = cleanPurposeText(rawPurpose) || rawPurpose;
+  const readableSummary = buildReadableSummary(permitSubtype || permitType, purpose);
+  const { whyItMatters, likelyTrades } = deriveNotes(permitType, permitSubtype, purpose);
+  const address = toAddressCase(getText(record.address));
+  const city = getText(record.city) || 'Jacksonville';
+  const state = 'FL';
+  const zip = inferZipFromJson(record);
+  const neighborhood = inferNeighborhoodFromJson(record);
+  const valuation = getNumeric(record.value) ?? 0;
+  const coordinates = inferCoordinatesFromJson(record);
+  const permitNumber = getText(record.permitNumber) || `JAX-${id}`;
+
+  return {
+    id,
+    objectId: Number(id),
+    permitNumber,
+    permitType,
+    permitSubtype,
+    address,
+    city,
+    state,
+    zip,
+    neighborhood,
+    contactName: getText(record.contact) || 'Contact not listed',
+    contactPhone: getText(record.phone) || null,
+    contactEmail: getText(record.email) || null,
+    rawPurpose,
+    purpose,
+    readableSummary,
+    tradeSummary: '',
+    valuation,
+    issueDate: issueDate.toISOString(),
+    issueDateLabel: format(issueDate, 'MMM d, yyyy'),
+    mapsUrl: buildMapsUrl(address, city, state, zip),
+    whyItMatters,
+    likelyTrades,
+    isTradeRelevant: null,
+    summarySource: 'fallback',
+    tradeSource: 'fallback',
+    coordinates,
+    rawFields: {
+      'Permit #': permitNumber,
+      'Permit type': permitType || 'N/A',
+      'Permit subtype': permitSubtype || 'N/A',
+      Address: address || 'N/A',
+      City: city || 'N/A',
+      State: state,
+      ZIP: zip || 'N/A',
+      Neighborhood: neighborhood || 'N/A',
+      Contact: getText(record.contact) || 'N/A',
+      'Contact phone': getText(record.phone) || 'N/A',
+      'Contact email': getText(record.email) || 'N/A',
+      Purpose: purpose || 'N/A',
+      'Estimated valuation': valuation
+        ? valuation.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+        : 'N/A',
+      'Issue date': format(issueDate, 'MMM d, yyyy')
+    }
+  };
+}
+
+function toProject(detail: JacksonvillePermitDetail, result: JacksonvilleSearchItem): PermitProject | null {
+  const issueDate = parseIssueDate(detail.DateIssued || result.obj?.DateIssued);
   if (!issueDate) return null;
 
-  const valuation = getNumber(attributes, 'Const_Cost');
-  if (!valuation || valuation <= 0) return null;
+  const permitId = getNumeric(detail.PermitId ?? result.key);
+  if (!permitId) return null;
 
-  const permitType = getString(attributes, 'Permit_Type_Description');
-  const permitSubtype = getString(attributes, 'Permit_Subtype_Description');
-  const rawPurpose = getString(attributes, 'Purpose');
-  const purpose = cleanPurposeText(rawPurpose);
-  const address = getString(attributes, 'Address');
-  const city = getString(attributes, 'City') || 'Nashville';
-  const state = getString(attributes, 'State') || 'TN';
-  const zip = getString(attributes, 'ZIP');
-  const contactName = getString(attributes, 'Contact') || 'Contact not listed';
-  const contactPhone = extractPhone(rawPurpose);
-  const contactEmail = extractEmail(rawPurpose);
-  const objectId = getNumber(attributes, 'ObjectId');
-  const permitNumber = getString(attributes, 'Permit__') || `OBJ-${objectId ?? 'NA'}`;
-  const neighborhood = inferNeighborhood(zip, address, purpose);
+  const permitType = getText(detail.PermitTypeDescription || result.obj?.PermitType);
+  const permitSubtype =
+    (Array.isArray(detail.PermitWorkSubTypes)
+      ? detail.PermitWorkSubTypes.map((item) => getText(item.WorkSubTypeDescription)).filter(Boolean).join(', ')
+      : '') ||
+    getText(detail.WorkTypeDescription || result.obj?.WorkType);
+  const rawPurpose = buildJacksonvillePurpose(detail, result);
+  const purpose = cleanPurposeText(rawPurpose) || toSentenceCase(getText(result.description));
+  const address = normalizeAddressLine(detail, getText(result.obj?.Address));
+  const city = getText(detail.Address?.City) || 'Jacksonville';
+  const state = getText(detail.Address?.State) || 'FL';
+  const zip = getText(detail.Address?.ZipCode);
+  const neighborhood = inferNeighborhood(getText(detail.Address?.Neighborhood), zip, address);
+  const contactName = getCompanyName(detail);
+  const contactPhone = getCompanyPhone(detail);
+  const contactEmail = getCompanyEmail(detail);
+  const valuation = getNumeric(detail.TotalCost) ?? 0;
   const { whyItMatters, likelyTrades } = deriveNotes(permitType, permitSubtype, purpose);
   const readableSummary = buildReadableSummary(permitSubtype || permitType, purpose);
-  const lat = getNumber(attributes, 'Lat');
-  const lon = getNumber(attributes, 'Lon');
-
-  if (!objectId) return null;
+  const lat = getNumeric(detail.Address?.Latitude);
+  const lon = getNumeric(detail.Address?.Longitude);
+  const permitNumber = getText(detail.FullPermitNumber || result.title) || `JAX-${permitId}`;
 
   const rawFields: Record<string, string> = {
     'Permit #': permitNumber,
@@ -413,31 +709,27 @@ function toProject(feature: ArcgisFeature): PermitProject | null {
     City: city || 'N/A',
     State: state || 'N/A',
     ZIP: zip || 'N/A',
-    Contact: contactName,
+    Neighborhood: neighborhood || 'N/A',
+    Contact: contactName || 'N/A',
     'Contact phone': contactPhone || 'N/A',
     'Contact email': contactEmail || 'N/A',
     Purpose: purpose || 'N/A',
-    'Estimated valuation': valuation.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }),
+    'Estimated valuation': valuation ? valuation.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }) : 'N/A',
     'Issue date': format(issueDate, 'MMM d, yyyy'),
-    Parcel: getString(attributes, 'Parcel') || 'N/A',
-    'Council district': getString(attributes, 'Council_Dist') || 'N/A',
-    'Census tract': getString(attributes, 'Census_Tract') || 'N/A',
+    'Property key': getText(detail.PropertyKey || detail.Address?.Re || result.obj?.PropertyKey) || 'N/A',
+    'Council district': getText(detail.Address?.CouncilDistrict) || 'N/A',
+    'Census tract': getText(detail.Address?.CensusTract) || 'N/A',
     Latitude: lat !== null ? String(lat) : 'N/A',
     Longitude: lon !== null ? String(lon) : 'N/A',
     'Date entered': (() => {
-      const entered = attributes.Date_Entered;
-      if (typeof entered === 'number') {
-        const date = new Date(entered);
-        if (!Number.isNaN(date.getTime())) return format(date, 'MMM d, yyyy');
-      }
-      return 'N/A';
-    })(),
-    'Subdivision / lot': getString(attributes, 'Subdivision_Lot') || 'N/A'
+      const entered = parseIssueDate(detail.DateEntered);
+      return entered ? format(entered, 'MMM d, yyyy') : 'N/A';
+    })()
   };
 
   return {
-    id: String(objectId),
-    objectId,
+    id: String(permitId),
+    objectId: permitId,
     permitNumber,
     permitType,
     permitSubtype,
@@ -604,10 +896,10 @@ async function loadProjects(): Promise<CacheValue> {
   if (inflight) return inflight;
 
   inflight = (async () => {
-    const features = await fetchAllFeatures();
-    const projects = features
-      .map(toProject)
-      .filter((project): project is PermitProject => Boolean(project))
+    const jsonRecords = await readJacksonvilleJsonRecords();
+    const projects = (jsonRecords?.length
+      ? jsonRecords.map(projectFromJsonRecord).filter((project): project is PermitProject => Boolean(project))
+      : JACKSONVILLE_SNAPSHOT.map(projectFromSnapshot))
       .sort((left, right) => {
         if (left.issueDate === right.issueDate) return right.valuation - left.valuation;
         return right.issueDate.localeCompare(left.issueDate);
@@ -628,8 +920,8 @@ async function loadProjects(): Promise<CacheValue> {
 export function getDefaultFilters(): DashboardFilters {
   const today = new Date();
   return {
-    minBudget: 250000,
-    maxBudget: 2000000,
+    minBudget: 0,
+    maxBudget: 25000000,
     dateFrom: format(subDays(today, 365), 'yyyy-MM-dd'),
     dateTo: format(today, 'yyyy-MM-dd'),
     permitType: '',
@@ -724,6 +1016,10 @@ function buildActiveContacts(projects: PermitProject[]): ActiveContact[] {
         projectCount: 1,
         totalValuation: project.valuation,
         mostRecentPermit: project.issueDate,
+        mostRecentPermitAddress: project.address,
+        mostRecentPermitSummary: project.readableSummary,
+        mostRecentPermitType: project.permitSubtype || project.permitType,
+        mostRecentProjectId: project.id,
         phone: project.contactPhone,
         email: project.contactEmail
       });
@@ -732,12 +1028,18 @@ function buildActiveContacts(projects: PermitProject[]): ActiveContact[] {
 
     existing.projectCount += 1;
     existing.totalValuation += project.valuation;
-    if (project.issueDate > existing.mostRecentPermit) existing.mostRecentPermit = project.issueDate;
+    if (project.issueDate > existing.mostRecentPermit) {
+      existing.mostRecentPermit = project.issueDate;
+      existing.mostRecentPermitAddress = project.address;
+      existing.mostRecentPermitSummary = project.readableSummary;
+      existing.mostRecentPermitType = project.permitSubtype || project.permitType;
+      existing.mostRecentProjectId = project.id;
+    }
     if (!existing.phone && project.contactPhone) existing.phone = project.contactPhone;
     if (!existing.email && project.contactEmail) existing.email = project.contactEmail;
   }
 
-  return [...buckets.values()].sort((left, right) => right.projectCount - left.projectCount || right.totalValuation - left.totalValuation);
+  return [...buckets.values()].sort((left, right) => right.mostRecentPermit.localeCompare(left.mostRecentPermit) || right.projectCount - left.projectCount || right.totalValuation - left.totalValuation);
 }
 
 function safePreview(value: string, max = 320): string {

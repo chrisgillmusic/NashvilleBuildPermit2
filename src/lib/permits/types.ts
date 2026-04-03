@@ -61,6 +61,10 @@ export type ActiveContact = {
   projectCount: number;
   totalValuation: number;
   mostRecentPermit: string;
+  mostRecentPermitAddress?: string;
+  mostRecentPermitSummary?: string;
+  mostRecentPermitType?: string;
+  mostRecentProjectId?: string;
   phone: string | null;
   email: string | null;
 };

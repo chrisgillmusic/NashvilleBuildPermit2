@@ -3,7 +3,8 @@
 import clsx from 'clsx';
 import { format, formatDistanceToNowStrict, isAfter, parseISO, subDays } from 'date-fns';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
-import { formatCurrency } from '@/lib/format';
+import { formatCurrency, formatPhone } from '@/lib/format';
+import { buildContactOutreachMailto, buildProjectOutreachMailto } from '@/lib/outreach';
 import { projectViewForMode, TRADE_OPTIONS, type FeedMode } from '@/lib/permits/trade-utils';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject } from '@/lib/permits/types';
 import { PermitFeedCard } from './permit-feed-card';
@@ -15,13 +16,15 @@ type Props = {
 
 type TabKey = 'jobs' | 'contractors' | 'profile';
 type TimeframeKey = 'new' | 'active' | 'older';
+type ContractorSort = 'recent' | 'value' | 'projects';
 
 type UserProfile = {
   email: string;
-  username: string;
+  fullName: string;
   businessName: string;
   phone: string;
   trade: string;
+  serviceDescription: string;
   budgetMin: number;
   budgetMax: number;
   defaultFeedMode: FeedMode;
@@ -49,7 +52,7 @@ const ONBOARDING_CARDS = [
   'BidHammer scans live permit data to surface real construction opportunities.',
   'Choose your trade to put the most relevant jobs at the top of your scroll.',
   'Call active contractors directly when permit records include contact information.',
-  'Stay on top of new Nashville jobs before someone else gets there first.'
+  'Stay on top of new Jacksonville jobs before someone else gets there first.'
 ] as const;
 
 const MOBILE_TABS: Array<{ key: TabKey; label: string }> = [
@@ -93,6 +96,10 @@ function aggregateContacts(projects: PermitProject[]): ActiveContact[] {
         projectCount: 1,
         totalValuation: project.valuation,
         mostRecentPermit: project.issueDate,
+        mostRecentPermitAddress: project.address,
+        mostRecentPermitSummary: project.readableSummary,
+        mostRecentPermitType: project.permitSubtype || project.permitType,
+        mostRecentProjectId: project.id,
         phone: project.contactPhone,
         email: project.contactEmail
       });
@@ -101,12 +108,18 @@ function aggregateContacts(projects: PermitProject[]): ActiveContact[] {
 
     existing.projectCount += 1;
     existing.totalValuation += project.valuation;
-    if (project.issueDate > existing.mostRecentPermit) existing.mostRecentPermit = project.issueDate;
+    if (project.issueDate > existing.mostRecentPermit) {
+      existing.mostRecentPermit = project.issueDate;
+      existing.mostRecentPermitAddress = project.address;
+      existing.mostRecentPermitSummary = project.readableSummary;
+      existing.mostRecentPermitType = project.permitSubtype || project.permitType;
+      existing.mostRecentProjectId = project.id;
+    }
     if (!existing.phone && project.contactPhone) existing.phone = project.contactPhone;
     if (!existing.email && project.contactEmail) existing.email = project.contactEmail;
   }
 
-  return [...map.values()].sort((left, right) => right.projectCount - left.projectCount || right.totalValuation - left.totalValuation);
+  return [...map.values()].sort((left, right) => right.mostRecentPermit.localeCompare(left.mostRecentPermit) || right.projectCount - left.projectCount || right.totalValuation - left.totalValuation);
 }
 
 function formatPhoneHref(phone: string): string {
@@ -116,13 +129,25 @@ function formatPhoneHref(phone: string): string {
 function getInitialProfile(payload: DashboardPayload): UserProfile {
   return {
     email: '',
-    username: '',
+    fullName: '',
     businessName: '',
     phone: '',
     trade: '',
+    serviceDescription: '',
     budgetMin: payload.filters.minBudget,
     budgetMax: payload.filters.maxBudget,
     defaultFeedMode: 'my-trade'
+  };
+}
+
+function outreachProfileFor(profile: UserProfile) {
+  return {
+    fullName: profile.fullName,
+    businessName: profile.businessName,
+    trade: profile.trade,
+    phone: profile.phone,
+    email: profile.email,
+    serviceDescription: profile.serviceDescription
   };
 }
 
@@ -174,6 +199,8 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   const [isGeneratingVisibleTradeNotes, setIsGeneratingVisibleTradeNotes] = useState(false);
   const [visibleGenerationProgress, setVisibleGenerationProgress] = useState<VisibleGenerationProgress | null>(null);
   const [logoFallback, setLogoFallback] = useState(false);
+  const [contractorQuery, setContractorQuery] = useState('');
+  const [contractorSort, setContractorSort] = useState<ContractorSort>('recent');
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
 
   const requestQuery = useMemo(() => {
@@ -185,8 +212,12 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   useEffect(() => {
     const storedProfile = window.localStorage.getItem(PROFILE_KEY);
     if (storedProfile) {
-      const parsed = JSON.parse(storedProfile) as Partial<UserProfile>;
-      const merged = { ...getInitialProfile(initialPayload), ...parsed };
+      const parsed = JSON.parse(storedProfile) as Partial<UserProfile> & { username?: string };
+      const merged = {
+        ...getInitialProfile(initialPayload),
+        ...parsed,
+        fullName: parsed.fullName || parsed.username || ''
+      };
       setProfile(merged);
       setFilters((current) => ({
         ...current,
@@ -226,6 +257,38 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   );
 
   const contractors = useMemo(() => aggregateContacts(visibleProjects), [visibleProjects]);
+  const filteredContractors = useMemo(() => {
+    const query = contractorQuery.trim().toLowerCase();
+    const searched = query
+      ? contractors.filter((contact) => {
+          const haystack = [
+            contact.name,
+            contact.mostRecentPermitAddress,
+            contact.mostRecentPermitSummary,
+            contact.mostRecentPermitType
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+
+          return haystack.includes(query);
+        })
+      : contractors;
+
+    const next = [...searched];
+    if (contractorSort === 'value') {
+      next.sort((left, right) => right.totalValuation - left.totalValuation || right.mostRecentPermit.localeCompare(left.mostRecentPermit));
+      return next;
+    }
+
+    if (contractorSort === 'projects') {
+      next.sort((left, right) => right.projectCount - left.projectCount || right.mostRecentPermit.localeCompare(left.mostRecentPermit));
+      return next;
+    }
+
+    next.sort((left, right) => right.mostRecentPermit.localeCompare(left.mostRecentPermit));
+    return next;
+  }, [contractorQuery, contractorSort, contractors]);
   const visibleStoredCount = useMemo(() => visibleProjects.filter((project) => project.summarySource === 'ai').length, [visibleProjects]);
   const visibleNeedsSummaryCount = useMemo(() => visibleProjects.filter((project) => project.needsSummary).length, [visibleProjects]);
   const visibleNeedsTradeNoteCount = useMemo(
@@ -801,6 +864,7 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                           key={project.id}
                           project={project}
                           trade={profile.trade}
+                          emailHref={buildProjectOutreachMailto(project, outreachProfileFor(profile))}
                           expanded={expandedJobId === project.id}
                           onToggle={() => setExpandedJobId((current) => (current === project.id ? null : project.id))}
                         />
@@ -822,15 +886,40 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
             <div className="flex items-end justify-between gap-4 border-b border-[#ff3b30]/35 pb-4">
               <div>
                 <div className="text-xs uppercase tracking-[0.28em] text-[#8e8e93]">Contractors</div>
-                <h1 className="mt-2 text-3xl font-semibold text-[#f5f5f7]">Call the names showing up on live permits.</h1>
+                <h1 className="mt-2 text-3xl font-semibold text-[#f5f5f7]">Who should you contact next in Jacksonville?</h1>
               </div>
-              <div className="text-sm text-[#8e8e93]">{contractors.length} contacts</div>
+              <div className="text-sm text-[#8e8e93]">{filteredContractors.length} contacts</div>
             </div>
 
             <p className="text-xs text-[#636366]">Where available, contact information is provided directly from permit records.</p>
 
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_220px]">
+              <label className="space-y-2 text-sm text-[#d8d8dc]">
+                <span>Search contractors</span>
+                <input
+                  value={contractorQuery}
+                  onChange={(event) => setContractorQuery(event.target.value)}
+                  type="search"
+                  placeholder="Company, address, or permit scope"
+                  className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]"
+                />
+              </label>
+              <label className="space-y-2 text-sm text-[#d8d8dc]">
+                <span>Sort</span>
+                <select
+                  value={contractorSort}
+                  onChange={(event) => setContractorSort(event.target.value as ContractorSort)}
+                  className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]"
+                >
+                  <option value="recent">Most recent permit</option>
+                  <option value="value">Highest total valuation</option>
+                  <option value="projects">Most projects</option>
+                </select>
+              </label>
+            </div>
+
             <div className="space-y-4">
-              {contractors.map((contact) => (
+              {filteredContractors.map((contact) => (
                 <article key={contact.name} className="rounded-[26px] border border-white/8 bg-[#1c1c1e] p-5 shadow-[0_18px_48px_rgba(0,0,0,0.38)]">
                   <div className="flex items-start justify-between gap-4">
                     <div>
@@ -838,13 +927,17 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                       <p className="mt-2 text-sm text-[#b3b3b8]">
                         {contact.projectCount} projects • {formatCurrency(contact.totalValuation)}
                       </p>
-                      {contact.phone ? <p className="mt-3 text-sm text-[#d8d8dc]">{contact.phone}</p> : null}
-                      {contact.email ? <p className="mt-1 text-sm text-[#d8d8dc]">{contact.email}</p> : null}
+                      {contact.mostRecentPermitAddress ? <p className="mt-3 text-sm font-medium text-[#f5f5f7]">{contact.mostRecentPermitAddress}</p> : null}
+                      {contact.mostRecentPermitType ? <p className="mt-1 text-sm text-[#d8d8dc]">{contact.mostRecentPermitType}</p> : null}
+                      {contact.mostRecentPermitSummary ? <p className="mt-2 text-sm leading-6 text-[#b3b3b8]">{contact.mostRecentPermitSummary}</p> : null}
+                      {contact.phone ? <p className="mt-3 text-sm text-[#d8d8dc]">{formatPhone(contact.phone)}</p> : null}
+                      {contact.email ? <p className="mt-1 break-all text-sm text-[#d8d8dc]">{contact.email}</p> : null}
                       {!contact.phone && !contact.email ? <p className="mt-3 text-sm text-[#8e8e93]">Contact info unavailable</p> : null}
                     </div>
                     <div className="rounded-2xl border border-white/8 bg-[#111113] px-4 py-3 text-right">
                       <div className="text-[11px] uppercase tracking-[0.2em] text-[#8e8e93]">Most recent</div>
-                      <div className="mt-2 text-sm text-[#f5f5f7]">{formatDistanceToNowStrict(parseISO(contact.mostRecentPermit), { addSuffix: true })}</div>
+                      <div className="mt-2 text-sm text-[#f5f5f7]">{format(parseISO(contact.mostRecentPermit), 'MMM d, yyyy')}</div>
+                      <div className="mt-1 text-xs text-[#8e8e93]">{formatDistanceToNowStrict(parseISO(contact.mostRecentPermit), { addSuffix: true })}</div>
                     </div>
                   </div>
 
@@ -855,13 +948,29 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                       </a>
                     ) : null}
                     {contact.email ? (
-                      <a href={`mailto:${contact.email}`} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-[#f5f5f7] active:scale-[0.98]">
+                      <a
+                        href={buildContactOutreachMailto(contact, outreachProfileFor(profile)) || `mailto:${contact.email}`}
+                        className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-[#f5f5f7] active:scale-[0.98]"
+                      >
                         Email
                       </a>
+                    ) : null}
+                    {contact.mostRecentProjectId ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTab('jobs');
+                          setExpandedJobId(contact.mostRecentProjectId || null);
+                        }}
+                        className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-[#f5f5f7] active:scale-[0.98]"
+                      >
+                        Open latest job
+                      </button>
                     ) : null}
                   </div>
                 </article>
               ))}
+              {!filteredContractors.length ? <div className="rounded-[24px] border border-white/8 bg-[#111113] px-5 py-8 text-sm text-[#8e8e93]">No contractors match that search.</div> : null}
             </div>
           </section>
         ) : null}
@@ -880,8 +989,8 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                   <input value={profile.email} onChange={(event) => updateProfile('email', event.target.value)} type="email" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
                 </label>
                 <label className="space-y-2 text-sm text-[#d8d8dc]">
-                  <span>Username</span>
-                  <input value={profile.username} onChange={(event) => updateProfile('username', event.target.value)} type="text" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                  <span>Full name</span>
+                  <input value={profile.fullName} onChange={(event) => updateProfile('fullName', event.target.value)} type="text" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
                 </label>
                 <label className="space-y-2 text-sm text-[#d8d8dc]">
                   <span>Business name</span>
@@ -901,6 +1010,10 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                       </option>
                     ))}
                   </select>
+                </label>
+                <label className="space-y-2 text-sm text-[#d8d8dc] sm:col-span-2">
+                  <span>Short service description</span>
+                  <input value={profile.serviceDescription} onChange={(event) => updateProfile('serviceDescription', event.target.value)} type="text" placeholder="Example: commercial drywall and interiors across Jacksonville" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
                 </label>
                 <label className="space-y-2 text-sm text-[#d8d8dc]">
                   <span>Default feed scope</span>
