@@ -754,36 +754,31 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
               <div className="flex items-start justify-between gap-4 border-b border-white/8 pb-5">
                 <div>
                   <div className="text-4xl font-semibold tracking-[-0.04em] text-[#f5f5f7]">{format(new Date(), 'MMMM d')}</div>
-                  <p className="mt-3 max-w-xl text-sm leading-6 text-[#b3b3b8]">{buildHeaderSummary(profile.trade)}</p>
+                  <p className="mt-3 max-w-[15.5rem] text-sm leading-6 text-[#b3b3b8] sm:max-w-[19rem]">{buildHeaderSummary(profile.trade)}</p>
                 </div>
-                <div className="flex flex-col items-end gap-2 pt-1">
+                <div className="flex flex-col items-end pt-1">
                   {logoFallback ? (
                     <div className="text-right">
                       <div className="text-xs uppercase tracking-[0.32em] text-[#8e8e93]">BidHammer</div>
-                      <div className="mt-1 text-xs text-[#636366]">{isLoading ? 'Refreshing' : 'Live permit feed'}</div>
                     </div>
                   ) : (
-                    <>
-                      <img
-                        src="/brand/bh-logo.png"
-                        alt="BidHammer"
-                        width={96}
-                        height={34}
-                        className="h-auto w-[88px] object-contain sm:w-[96px]"
-                        onError={() => setLogoFallback(true)}
-                      />
-                      <div className="text-xs text-[#636366]">{isLoading ? 'Refreshing' : 'Live permit feed'}</div>
-                    </>
+                    <img
+                      src="/brand/bh-logo.png"
+                      alt="BidHammer"
+                      width={132}
+                      height={46}
+                      className="h-auto w-[118px] object-contain sm:w-[132px]"
+                      onError={() => setLogoFallback(true)}
+                    />
                   )}
                 </div>
               </div>
             </header>
 
             <div className="space-y-10">
-              {feedSections.map((section, index) => (
+              {feedSections.map((section) => (
                 <section key={section.key} className="space-y-4">
                   <div className="space-y-3">
-                    {index === 0 ? <div className="h-px w-full bg-[#7f1d1d]" /> : null}
                     <div className="flex items-end justify-between gap-3">
                       <div className="flex flex-wrap items-baseline gap-2">
                         <h2 className="text-2xl font-semibold text-[#ff3b30]">{section.title}</h2>
@@ -990,7 +985,7 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
       </main>
 
       <nav className="fixed inset-x-0 bottom-4 z-50 px-4">
-        <div className="mx-auto flex w-full max-w-md items-center justify-between rounded-[26px] border border-white/10 bg-[rgba(17,17,19,0.78)] px-3 py-3 shadow-[0_22px_60px_rgba(0,0,0,0.55),0_0_0_1px_rgba(255,255,255,0.05)_inset] backdrop-blur-2xl">
+        <div className="mx-auto flex w-full max-w-md items-center justify-between rounded-[26px] border border-white/12 bg-[rgba(17,17,19,0.52)] px-3 py-3 shadow-[0_24px_70px_rgba(0,0,0,0.58),0_0_0_1px_rgba(255,255,255,0.06)_inset,0_0_26px_rgba(255,255,255,0.03)] backdrop-blur-[24px]">
           {MOBILE_TABS.map((tab) => (
             <button
               key={tab.key}

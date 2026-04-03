@@ -32,18 +32,37 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
   const insightText = buildVisibleInsight(project, trade || '');
   const hasContactActions = Boolean(project.contactPhone || project.contactEmail);
   const [imageFallback, setImageFallback] = useState(false);
+  const [pressed, setPressed] = useState(false);
   const placeholderImage = placeholderImageForProject(project);
+
+  function triggerHaptic() {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      navigator.vibrate(8);
+    }
+  }
+
+  function handleToggle() {
+    triggerHaptic();
+    onToggle();
+  }
 
   return (
     <article
       className={clsx(
-        'overflow-hidden rounded-[26px] border border-white/10 bg-[linear-gradient(180deg,rgba(34,34,37,0.96)_0%,rgba(24,24,27,0.98)_100%)] shadow-[0_14px_32px_rgba(0,0,0,0.34),0_1px_0_rgba(255,255,255,0.05)_inset] transition-all duration-200 ease-out',
+        'origin-top overflow-hidden rounded-[26px] border border-white/10 bg-[linear-gradient(180deg,rgba(34,34,37,0.96)_0%,rgba(24,24,27,0.98)_100%)] transition-all duration-200 ease-out',
+        pressed
+          ? 'scale-[0.994] border-white/[0.08] shadow-[0_10px_22px_rgba(0,0,0,0.26),0_1px_0_rgba(255,255,255,0.04)_inset] brightness-[0.985]'
+          : 'shadow-[0_14px_32px_rgba(0,0,0,0.34),0_1px_0_rgba(255,255,255,0.05)_inset]',
         expanded ? 'translate-y-[-1px] shadow-[0_24px_52px_rgba(0,0,0,0.45),0_1px_0_rgba(255,255,255,0.05)_inset]' : ''
       )}
     >
       <button
         type="button"
-        onClick={onToggle}
+        onClick={handleToggle}
+        onPointerDown={() => setPressed(true)}
+        onPointerUp={() => setPressed(false)}
+        onPointerCancel={() => setPressed(false)}
+        onPointerLeave={() => setPressed(false)}
         className="block w-full px-5 py-5 text-left transition-transform duration-150 ease-out active:scale-[0.992]"
       >
           <div className="flex items-start gap-4">
@@ -87,7 +106,7 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
       </button>
 
       {expanded ? (
-        <div className="animate-[card_reveal_220ms_cubic-bezier(0.22,1,0.36,1)] border-t border-white/8 bg-[linear-gradient(180deg,rgba(22,22,24,0.96)_0%,rgba(17,17,19,1)_100%)] px-5 pb-6 pt-5">
+        <div className="origin-top animate-[card_reveal_220ms_cubic-bezier(0.22,1,0.36,1)] border-t border-white/8 bg-[linear-gradient(180deg,rgba(22,22,24,0.96)_0%,rgba(17,17,19,1)_100%)] px-5 pb-6 pt-5">
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#ff3b30]">{project.issueDateLabel}</div>
@@ -95,7 +114,7 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
             </div>
             <button
               type="button"
-              onClick={onToggle}
+              onClick={handleToggle}
               className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#f5f5f7] transition-transform duration-150 ease-out active:scale-[0.98]"
             >
               Close
