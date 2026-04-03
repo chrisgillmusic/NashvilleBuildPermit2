@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { formatCurrency, formatPhone } from '@/lib/format';
 import { buildVisibleInsight } from '@/lib/permits/trade-utils';
 import type { PermitProject } from '@/lib/permits/types';
@@ -13,7 +13,8 @@ type Props = {
 
 const PLACEHOLDER_IMAGES = ['/placeholders/street-1.png', '/placeholders/street-2.png', '/placeholders/street-3.png'] as const;
 const CARD_PRESS_DURATION_MS = 320;
-const CARD_EXPANSION_DURATION_MS = 700;
+const CARD_EXPANSION_OPEN_DURATION_MS = 700;
+const CARD_EXPANSION_CLOSE_DURATION_MS = 280;
 const CARD_CONTENT_REVEAL_DELAY_MS = 200;
 const CARD_CONTENT_REVEAL_DURATION_MS = 400;
 const CARD_EXPANSION_EASE = 'cubic-bezier(0.16, 0.84, 0.22, 1)';
@@ -41,6 +42,12 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
   const [imageFallback, setImageFallback] = useState(false);
   const [pressed, setPressed] = useState(false);
   const placeholderImage = placeholderImageForProject(project);
+  const articleRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!expanded) return;
+    articleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [expanded]);
 
   function triggerHaptic() {
     if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
@@ -56,6 +63,7 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
 
   return (
     <article
+      ref={articleRef}
       className={clsx(
         'origin-top overflow-hidden rounded-[26px] border border-white/10 bg-[linear-gradient(180deg,rgba(34,34,37,0.96)_0%,rgba(24,24,27,0.98)_100%)]',
         pressed
@@ -128,17 +136,22 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
           transform: expanded ? 'translateY(0) scale(1.012)' : 'translateY(-2px) scale(0.995)',
           filter: expanded ? 'brightness(1.015)' : 'brightness(0.94)',
           transitionProperty: 'max-height, opacity, transform, filter',
-          transitionDuration: `${CARD_EXPANSION_DURATION_MS}ms`,
+          transitionDuration: `${expanded ? CARD_EXPANSION_OPEN_DURATION_MS : CARD_EXPANSION_CLOSE_DURATION_MS}ms`,
           transitionTimingFunction: CARD_EXPANSION_EASE
         }}
       >
-        <div className="border-t border-white/8 bg-[linear-gradient(180deg,rgba(22,22,24,0.96)_0%,rgba(17,17,19,1)_100%)] px-5 pb-6 pt-5">
+        <div
+          className="border-t border-white/8 bg-[linear-gradient(180deg,rgba(22,22,24,0.96)_0%,rgba(17,17,19,1)_100%)] px-5 pb-6 pt-5"
+          style={{
+            minHeight: expanded ? 'calc(100vh - 15rem)' : '0px'
+          }}
+        >
           <div
             style={{
               opacity: expanded ? 1 : 0,
               transform: expanded ? 'translateY(0)' : 'translateY(8px)',
               transitionProperty: 'opacity, transform',
-              transitionDuration: `${CARD_CONTENT_REVEAL_DURATION_MS}ms`,
+              transitionDuration: `${expanded ? CARD_CONTENT_REVEAL_DURATION_MS : 180}ms`,
               transitionDelay: expanded ? `${CARD_CONTENT_REVEAL_DELAY_MS}ms` : '0ms',
               transitionTimingFunction: CARD_CONTENT_EASE
             }}
