@@ -920,7 +920,7 @@ async function loadProjects(): Promise<CacheValue> {
 export function getDefaultFilters(): DashboardFilters {
   const today = new Date();
   return {
-    minBudget: 0,
+    minBudget: 50000,
     maxBudget: 25000000,
     dateFrom: format(subDays(today, 365), 'yyyy-MM-dd'),
     dateTo: format(today, 'yyyy-MM-dd'),

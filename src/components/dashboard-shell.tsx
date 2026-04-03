@@ -43,8 +43,9 @@ type VisibleGenerationProgress = {
   status: 'idle' | 'running' | 'complete' | 'failed';
 };
 
+type ProfileSaveState = 'idle' | 'unsaved' | 'saved';
+
 const PROFILE_KEY = 'nbi-profile-v1';
-const ONBOARDING_KEY = 'nbi-onboarding-complete-v1';
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 13 • Summary First';
 const VISIBLE_SUMMARY_CHUNK_SIZE = 5;
 
@@ -151,6 +152,10 @@ function outreachProfileFor(profile: UserProfile) {
   };
 }
 
+function isProfileComplete(profile: UserProfile): boolean {
+  return [profile.email, profile.fullName, profile.businessName, profile.phone, profile.trade].every((value) => value.trim().length > 0);
+}
+
 function projectsForTimeframe(projects: PermitProject[], timeframe: TimeframeKey): PermitProject[] {
   const now = new Date();
 
@@ -201,7 +206,10 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   const [logoFallback, setLogoFallback] = useState(false);
   const [contractorQuery, setContractorQuery] = useState('');
   const [contractorSort, setContractorSort] = useState<ContractorSort>('recent');
+  const [profileSaveState, setProfileSaveState] = useState<ProfileSaveState>('idle');
   const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
+  const pinnedFrameRef = useRef<HTMLDivElement | null>(null);
+  const cardAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const requestQuery = useMemo(() => {
     const params = new URLSearchParams(buildQuery(filters));
@@ -211,30 +219,45 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
 
   useEffect(() => {
     const storedProfile = window.localStorage.getItem(PROFILE_KEY);
+    let mergedProfile = getInitialProfile(initialPayload);
+
     if (storedProfile) {
       const parsed = JSON.parse(storedProfile) as Partial<UserProfile> & { username?: string };
       const merged = {
-        ...getInitialProfile(initialPayload),
+        ...mergedProfile,
         ...parsed,
-        fullName: parsed.fullName || parsed.username || ''
+        fullName: parsed.fullName || parsed.username || '',
+        budgetMax: mergedProfile.budgetMax
       };
+      mergedProfile = merged;
       setProfile(merged);
       setFilters((current) => ({
         ...current,
         minBudget: merged.budgetMin ?? current.minBudget,
         maxBudget: merged.budgetMax ?? current.maxBudget
       }));
+      setProfileSaveState(isProfileComplete(merged) ? 'saved' : 'idle');
     }
-
-    const onboardingComplete = window.localStorage.getItem(ONBOARDING_KEY) === 'true';
-    setShowOnboarding(!onboardingComplete);
+    setShowOnboarding(!isProfileComplete(mergedProfile));
     setOnboardingReady(true);
   }, [initialPayload]);
 
   useEffect(() => {
-    if (!onboardingReady) return;
-    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
-  }, [onboardingReady, profile]);
+    if (!expandedJobId || activeTab !== 'jobs') return;
+    if (typeof window === 'undefined') return;
+
+    const anchor = cardAnchorRefs.current[expandedJobId];
+    if (!anchor) return;
+
+    const timer = window.setTimeout(() => {
+      const pinnedHeight = pinnedFrameRef.current?.getBoundingClientRect().height || 0;
+      const anchorTop = anchor.getBoundingClientRect().top + window.scrollY;
+      const targetTop = Math.max(anchorTop - pinnedHeight - 8, 0);
+      window.scrollTo({ top: targetTop, behavior: 'smooth' });
+    }, 40);
+
+    return () => window.clearTimeout(timer);
+  }, [activeTab, expandedJobId]);
 
   const visibleProjects = useMemo(() => {
     if (profile.defaultFeedMode === 'my-trade' && profile.trade) {
@@ -301,21 +324,28 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   );
 
   function updateProfile<K extends keyof UserProfile>(key: K, value: UserProfile[K]) {
+    setProfileSaveState('unsaved');
     setProfile((current) => ({ ...current, [key]: value }));
   }
 
-  function applyProfileBudget() {
+  function applyProfileBudget(nextProfile: UserProfile = profile) {
     setFilters((current) => ({
       ...current,
-      minBudget: profile.budgetMin,
-      maxBudget: profile.budgetMax
+      minBudget: nextProfile.budgetMin,
+      maxBudget: nextProfile.budgetMax
     }));
   }
 
-  function completeOnboarding() {
-    if (!profile.trade) return;
-    window.localStorage.setItem(ONBOARDING_KEY, 'true');
-    setShowOnboarding(false);
+  function saveProfile(options?: { closeOnboarding?: boolean }) {
+    if (!isProfileComplete(profile)) return;
+
+    window.localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    applyProfileBudget(profile);
+    setProfileSaveState('saved');
+
+    if (options?.closeOnboarding) {
+      setShowOnboarding(false);
+    }
   }
 
   function advanceOnboarding() {
@@ -808,12 +838,16 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
     }
   }
 
+  if (!onboardingReady) {
+    return <main className="min-h-screen bg-black" />;
+  }
+
   return (
     <>
       <main className="mx-auto min-h-screen w-full max-w-5xl px-4 pb-32 pt-4 sm:px-6">
         {activeTab === 'jobs' ? (
           <section>
-            <div className="sticky top-0 z-20 bg-black/95 pb-3 pt-3 backdrop-blur-[2px]">
+            <div ref={pinnedFrameRef} className="sticky top-0 z-20 bg-black/95 pb-3 pt-3 backdrop-blur-[2px]">
               <header className="px-1">
                 <div className="flex items-start justify-between gap-4 pb-5">
                   <div>
@@ -860,14 +894,20 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                   {section.projects.length ? (
                     <div className="space-y-4">
                       {section.projects.map((project) => (
-                        <PermitFeedCard
+                        <div
                           key={project.id}
-                          project={project}
-                          trade={profile.trade}
-                          emailHref={buildProjectOutreachMailto(project, outreachProfileFor(profile))}
-                          expanded={expandedJobId === project.id}
-                          onToggle={() => setExpandedJobId((current) => (current === project.id ? null : project.id))}
-                        />
+                          ref={(node) => {
+                            cardAnchorRefs.current[project.id] = node;
+                          }}
+                        >
+                          <PermitFeedCard
+                            project={project}
+                            trade={profile.trade}
+                            emailHref={buildProjectOutreachMailto(project, outreachProfileFor(profile))}
+                            expanded={expandedJobId === project.id}
+                            onToggle={() => setExpandedJobId((current) => (current === project.id ? null : project.id))}
+                          />
+                        </div>
                       ))}
                     </div>
                   ) : (
@@ -979,10 +1019,20 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
           <section className="space-y-4 pt-2">
             <div className="border-b border-[#ff3b30]/35 pb-4">
               <div className="text-xs uppercase tracking-[0.28em] text-[#8e8e93]">Profile</div>
-              <h1 className="mt-2 text-3xl font-semibold text-[#f5f5f7]">Set your trade and keep the feed tuned to your work.</h1>
+              <h1 className="mt-2 text-3xl font-semibold text-[#f5f5f7]">Keep your outreach details ready to send.</h1>
             </div>
 
             <div className="rounded-[28px] border border-white/8 bg-[#1c1c1e] p-5 shadow-[0_18px_48px_rgba(0,0,0,0.38)]">
+              <div className="mb-4 flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-[#8e8e93]">Identity and outreach</div>
+                  <p className="mt-2 text-sm text-[#b3b3b8]">Store the minimum info needed to call or email Jacksonville contractors quickly.</p>
+                </div>
+                <div className="text-xs font-semibold text-[#8e8e93]">
+                  {profileSaveState === 'saved' ? 'Saved' : profileSaveState === 'unsaved' ? 'Unsaved changes' : 'Local profile'}
+                </div>
+              </div>
+
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="space-y-2 text-sm text-[#d8d8dc]">
                   <span>Email</span>
@@ -1015,33 +1065,40 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                   <span>Short service description</span>
                   <input value={profile.serviceDescription} onChange={(event) => updateProfile('serviceDescription', event.target.value)} type="text" placeholder="Example: commercial drywall and interiors across Jacksonville" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
                 </label>
-                <label className="space-y-2 text-sm text-[#d8d8dc]">
-                  <span>Default feed scope</span>
-                  <select value={profile.defaultFeedMode} onChange={(event) => updateProfile('defaultFeedMode', event.target.value as FeedMode)} className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]">
-                    <option value="my-trade">My Trade</option>
-                    <option value="all-jobs">All Jobs</option>
-                  </select>
-                </label>
-              </div>
-
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                <label className="space-y-2 text-sm text-[#d8d8dc]">
-                  <span>Budget min</span>
-                  <input value={profile.budgetMin} onChange={(event) => updateProfile('budgetMin', Number(event.target.value || 0))} type="number" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
-                </label>
-                <label className="space-y-2 text-sm text-[#d8d8dc]">
-                  <span>Budget max</span>
-                  <input value={profile.budgetMax} onChange={(event) => updateProfile('budgetMax', Number(event.target.value || 0))} type="number" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
-                </label>
               </div>
 
               <div className="mt-5 flex flex-wrap gap-3">
-                <button onClick={applyProfileBudget} className="rounded-full bg-[#ff3b30] px-4 py-2 text-sm font-semibold text-white active:scale-[0.98]">
-                  Apply budget
+                <button
+                  onClick={() => saveProfile()}
+                  disabled={!isProfileComplete(profile)}
+                  className={clsx(
+                    'rounded-full px-4 py-2 text-sm font-semibold active:scale-[0.98]',
+                    isProfileComplete(profile) ? 'bg-[#ff3b30] text-white' : 'bg-white/10 text-[#636366]'
+                  )}
+                >
+                  Save Profile
                 </button>
                 <button onClick={() => setShowOnboarding(true)} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-[#f5f5f7] active:scale-[0.98]">
                   How it works
                 </button>
+              </div>
+
+              <div className="mt-6 rounded-[24px] border border-white/8 bg-[#111113] p-4">
+                <div className="text-[11px] uppercase tracking-[0.18em] text-[#8e8e93]">Feed preferences</div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <label className="space-y-2 text-sm text-[#d8d8dc]">
+                  <span>Default feed scope</span>
+                  <select value={profile.defaultFeedMode} onChange={(event) => updateProfile('defaultFeedMode', event.target.value as FeedMode)} className="w-full rounded-2xl border border-white/10 bg-[#0d0d0f] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]">
+                    <option value="my-trade">My Trade</option>
+                    <option value="all-jobs">All Jobs</option>
+                  </select>
+                </label>
+                <label className="space-y-2 text-sm text-[#d8d8dc]">
+                  <span>Minimum project value</span>
+                  <input value={profile.budgetMin} onChange={(event) => updateProfile('budgetMin', Number(event.target.value || 0))} type="number" className="w-full rounded-2xl border border-white/10 bg-[#0d0d0f] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                </label>
+              </div>
+                <p className="mt-3 text-xs text-[#8e8e93]">We keep a meaningful floor for feed quality and hide the upper budget cap from the normal product flow.</p>
               </div>
 
               <details className="mt-6 rounded-[24px] border border-white/8 bg-[#111113] p-4">
@@ -1157,24 +1214,32 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
               </div>
 
               <div className="mt-5 rounded-[24px] border border-white/10 bg-[#1c1c1e] p-4">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8e8e93]">Select your trade</div>
-                <select value={profile.trade} onChange={(event) => updateProfile('trade', event.target.value)} className="mt-3 w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none">
-                  <option value="">Select your trade</option>
-                  {TRADE_OPTIONS.map((trade) => (
-                    <option key={trade} value={trade}>
-                      {trade}
-                    </option>
-                  ))}
-                </select>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8e8e93]">Set up your Jacksonville profile</div>
+                <div className="mt-3 grid gap-3">
+                  <input value={profile.email} onChange={(event) => updateProfile('email', event.target.value)} type="email" placeholder="Email" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none" />
+                  <input value={profile.fullName} onChange={(event) => updateProfile('fullName', event.target.value)} type="text" placeholder="Full name" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none" />
+                  <input value={profile.businessName} onChange={(event) => updateProfile('businessName', event.target.value)} type="text" placeholder="Business name" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none" />
+                  <input value={profile.phone} onChange={(event) => updateProfile('phone', event.target.value)} type="tel" placeholder="Phone" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none" />
+                  <select value={profile.trade} onChange={(event) => updateProfile('trade', event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none">
+                    <option value="">Select your trade</option>
+                    {TRADE_OPTIONS.map((trade) => (
+                      <option key={trade} value={trade}>
+                        {trade}
+                      </option>
+                    ))}
+                  </select>
+                  <input value={profile.serviceDescription} onChange={(event) => updateProfile('serviceDescription', event.target.value)} type="text" placeholder="Short service description (optional)" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none" />
+                </div>
+                <p className="mt-3 text-xs text-[#8e8e93]">Required: email, full name, business name, phone, and trade.</p>
                 <button
-                  onClick={completeOnboarding}
-                  disabled={!profile.trade || onboardingIndex < ONBOARDING_CARDS.length - 1}
+                  onClick={() => saveProfile({ closeOnboarding: true })}
+                  disabled={!isProfileComplete(profile) || onboardingIndex < ONBOARDING_CARDS.length - 1}
                   className={clsx(
                     'mt-4 w-full rounded-full px-4 py-3 text-sm font-semibold transition active:scale-[0.98]',
-                    profile.trade && onboardingIndex === ONBOARDING_CARDS.length - 1 ? 'bg-[#ff3b30] text-white' : 'bg-white/10 text-[#636366]'
+                    isProfileComplete(profile) && onboardingIndex === ONBOARDING_CARDS.length - 1 ? 'bg-[#ff3b30] text-white' : 'bg-white/10 text-[#636366]'
                   )}
                 >
-                  Start Using the App
+                  Save and Continue
                 </button>
               </div>
             </div>

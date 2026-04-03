@@ -21,6 +21,7 @@ const CARD_CONTENT_REVEAL_DURATION_MS = 400;
 const CARD_EXPANSION_EASE = 'cubic-bezier(0.16, 0.84, 0.22, 1)';
 const CARD_CONTENT_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
 const CARD_EXPANSION_MAX_HEIGHT = 960;
+const CARD_EXPANDED_MIN_HEIGHT = 'calc(100svh - 11rem)';
 
 function formatPhoneHref(phone: string): string {
   return `tel:${phone.replace(/[^\d+]/g, '')}`;
@@ -137,7 +138,7 @@ export function PermitFeedCard({ project, trade, emailHref, expanded, onToggle }
         <div
           className="border-t border-white/8 bg-[linear-gradient(180deg,rgba(22,22,24,0.96)_0%,rgba(17,17,19,1)_100%)] px-5 pb-6 pt-5"
           style={{
-            minHeight: expanded ? 'calc(100vh - 15rem)' : '0px'
+            minHeight: expanded ? CARD_EXPANDED_MIN_HEIGHT : '0px'
           }}
         >
           <div
