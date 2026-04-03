@@ -4,7 +4,7 @@ import clsx from 'clsx';
 import { format, formatDistanceToNowStrict, isAfter, parseISO, subDays } from 'date-fns';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { formatCurrency, formatPhone } from '@/lib/format';
-import { buildContactOutreachMailto, buildProjectOutreachMailto } from '@/lib/outreach';
+import { buildContactOutreachMailto, buildProjectOutreachMailto, OUTREACH_TEMPLATE_COUNT } from '@/lib/outreach';
 import { projectViewForMode, TRADE_OPTIONS, type FeedMode } from '@/lib/permits/trade-utils';
 import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject } from '@/lib/permits/types';
 import { PermitFeedCard } from './permit-feed-card';
@@ -46,15 +46,9 @@ type VisibleGenerationProgress = {
 type ProfileSaveState = 'idle' | 'unsaved' | 'saved';
 
 const PROFILE_KEY = 'nbi-profile-v1';
+const OUTREACH_TEMPLATE_INDEX_KEY = 'nbi-outreach-template-index-v1';
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 13 • Summary First';
 const VISIBLE_SUMMARY_CHUNK_SIZE = 5;
-
-const ONBOARDING_CARDS = [
-  'BidHammer scans live permit data to surface real construction opportunities.',
-  'Choose your trade to put the most relevant jobs at the top of your scroll.',
-  'Call active contractors directly when permit records include contact information.',
-  'Stay on top of new Jacksonville jobs before someone else gets there first.'
-] as const;
 
 const MOBILE_TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'jobs', label: 'Jobs' },
@@ -193,7 +187,7 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   const [profile, setProfile] = useState<UserProfile>(() => getInitialProfile(initialPayload));
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingReady, setOnboardingReady] = useState(false);
-  const [onboardingIndex, setOnboardingIndex] = useState(0);
+  const [outreachTemplateIndex, setOutreachTemplateIndex] = useState(0);
   const [debugProjectId, setDebugProjectId] = useState('24468');
   const [debugBypassCache, setDebugBypassCache] = useState(true);
   const [regenerateStatus, setRegenerateStatus] = useState<string | null>(null);
@@ -207,7 +201,6 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   const [contractorQuery, setContractorQuery] = useState('');
   const [contractorSort, setContractorSort] = useState<ContractorSort>('recent');
   const [profileSaveState, setProfileSaveState] = useState<ProfileSaveState>('idle');
-  const onboardingTrackRef = useRef<HTMLDivElement | null>(null);
   const pinnedFrameRef = useRef<HTMLDivElement | null>(null);
   const cardAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -219,6 +212,7 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
 
   useEffect(() => {
     const storedProfile = window.localStorage.getItem(PROFILE_KEY);
+    const storedTemplateIndex = window.localStorage.getItem(OUTREACH_TEMPLATE_INDEX_KEY);
     let mergedProfile = getInitialProfile(initialPayload);
 
     if (storedProfile) {
@@ -238,9 +232,40 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
       }));
       setProfileSaveState(isProfileComplete(merged) ? 'saved' : 'idle');
     }
+
+    if (storedTemplateIndex) {
+      const parsedTemplateIndex = Number.parseInt(storedTemplateIndex, 10);
+      if (Number.isFinite(parsedTemplateIndex)) {
+        setOutreachTemplateIndex(((parsedTemplateIndex % OUTREACH_TEMPLATE_COUNT) + OUTREACH_TEMPLATE_COUNT) % OUTREACH_TEMPLATE_COUNT);
+      }
+    }
+
     setShowOnboarding(!isProfileComplete(mergedProfile));
     setOnboardingReady(true);
   }, [initialPayload]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+
+    const html = document.documentElement;
+    const body = document.body;
+    const previousHtmlOverflow = html.style.overflow;
+    const previousBodyOverflow = body.style.overflow;
+
+    if (showOnboarding) {
+      html.style.overflow = 'hidden';
+      body.style.overflow = 'hidden';
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    } else {
+      html.style.overflow = previousHtmlOverflow;
+      body.style.overflow = previousBodyOverflow;
+    }
+
+    return () => {
+      html.style.overflow = previousHtmlOverflow;
+      body.style.overflow = previousBodyOverflow;
+    };
+  }, [showOnboarding]);
 
   useEffect(() => {
     if (!expandedJobId || activeTab !== 'jobs') return;
@@ -345,13 +370,35 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
 
     if (options?.closeOnboarding) {
       setShowOnboarding(false);
+      setActiveTab('jobs');
+      setExpandedJobId(null);
+      if (typeof window !== 'undefined') {
+        window.scrollTo({ top: 0, behavior: 'auto' });
+      }
     }
   }
 
-  function advanceOnboarding() {
-    const nextIndex = Math.min(onboardingIndex + 1, ONBOARDING_CARDS.length - 1);
-    setOnboardingIndex(nextIndex);
-    onboardingTrackRef.current?.children[nextIndex]?.scrollIntoView({ behavior: 'smooth', inline: 'center' });
+  function advanceOutreachTemplate() {
+    const nextIndex = (outreachTemplateIndex + 1) % OUTREACH_TEMPLATE_COUNT;
+    setOutreachTemplateIndex(nextIndex);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(OUTREACH_TEMPLATE_INDEX_KEY, String(nextIndex));
+    }
+  }
+
+  function handleLogout() {
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(PROFILE_KEY);
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    }
+
+    const nextProfile = getInitialProfile(initialPayload);
+    setProfile(nextProfile);
+    setProfileSaveState('idle');
+    setShowOnboarding(true);
+    setActiveTab('jobs');
+    setExpandedJobId(null);
+    applyProfileBudget(nextProfile);
   }
 
   async function refreshPayload() {
@@ -842,6 +889,54 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
     return <main className="min-h-screen bg-black" />;
   }
 
+  if (showOnboarding) {
+    return (
+      <main className="min-h-screen bg-black px-4 py-6">
+        <div className="mx-auto flex min-h-[100svh] w-full max-w-md items-end">
+          <div className="w-full rounded-[32px] border border-white/10 bg-[#111113] p-5 shadow-[0_30px_90px_rgba(0,0,0,0.6)]">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8e8e93]">BidHammer</div>
+            <div className="mt-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-[#ff3b30]">{APP_VERSION}</div>
+
+            <div className="mt-5">
+              <h1 className="text-3xl font-semibold leading-tight text-[#f5f5f7]">Set up your Jacksonville profile.</h1>
+              <p className="mt-3 max-w-sm text-sm leading-6 text-[#8e8e93]">Add your outreach details once, then jump straight into jobs and contractor contacts.</p>
+            </div>
+
+            <div className="mt-6 rounded-[24px] border border-white/10 bg-[#1c1c1e] p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8e8e93]">Required to continue</div>
+              <div className="mt-3 grid gap-3">
+                <input value={profile.email} onChange={(event) => updateProfile('email', event.target.value)} type="email" placeholder="Email" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                <input value={profile.fullName} onChange={(event) => updateProfile('fullName', event.target.value)} type="text" placeholder="Full name" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                <input value={profile.businessName} onChange={(event) => updateProfile('businessName', event.target.value)} type="text" placeholder="Business name" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                <input value={profile.phone} onChange={(event) => updateProfile('phone', event.target.value)} type="tel" placeholder="Phone" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                <select value={profile.trade} onChange={(event) => updateProfile('trade', event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]">
+                  <option value="">Select your trade</option>
+                  {TRADE_OPTIONS.map((trade) => (
+                    <option key={trade} value={trade}>
+                      {trade}
+                    </option>
+                  ))}
+                </select>
+                <input value={profile.serviceDescription} onChange={(event) => updateProfile('serviceDescription', event.target.value)} type="text" placeholder="Short service description (optional)" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+              </div>
+              <p className="mt-3 text-xs text-[#8e8e93]">Required: email, full name, business name, phone, and trade.</p>
+              <button
+                onClick={() => saveProfile({ closeOnboarding: true })}
+                disabled={!isProfileComplete(profile)}
+                className={clsx(
+                  'mt-4 w-full rounded-full px-4 py-3 text-sm font-semibold transition active:scale-[0.98]',
+                  isProfileComplete(profile) ? 'bg-[#ff3b30] text-white' : 'bg-white/10 text-[#636366]'
+                )}
+              >
+                Save and Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <>
       <main className="mx-auto min-h-screen w-full max-w-5xl px-4 pb-32 pt-4 sm:px-6">
@@ -903,7 +998,8 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                           <PermitFeedCard
                             project={project}
                             trade={profile.trade}
-                            emailHref={buildProjectOutreachMailto(project, outreachProfileFor(profile))}
+                            emailHref={buildProjectOutreachMailto(project, outreachProfileFor(profile), outreachTemplateIndex)}
+                            onEmailClick={advanceOutreachTemplate}
                             expanded={expandedJobId === project.id}
                             onToggle={() => setExpandedJobId((current) => (current === project.id ? null : project.id))}
                           />
@@ -989,7 +1085,8 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                     ) : null}
                     {contact.email ? (
                       <a
-                        href={buildContactOutreachMailto(contact, outreachProfileFor(profile)) || `mailto:${contact.email}`}
+                        href={buildContactOutreachMailto(contact, outreachProfileFor(profile), outreachTemplateIndex) || `mailto:${contact.email}`}
+                        onClick={advanceOutreachTemplate}
                         className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-[#f5f5f7] active:scale-[0.98]"
                       >
                         Email
@@ -1036,23 +1133,23 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="space-y-2 text-sm text-[#d8d8dc]">
                   <span>Email</span>
-                  <input value={profile.email} onChange={(event) => updateProfile('email', event.target.value)} type="email" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                  <input value={profile.email} onChange={(event) => updateProfile('email', event.target.value)} type="email" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
                 </label>
                 <label className="space-y-2 text-sm text-[#d8d8dc]">
                   <span>Full name</span>
-                  <input value={profile.fullName} onChange={(event) => updateProfile('fullName', event.target.value)} type="text" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                  <input value={profile.fullName} onChange={(event) => updateProfile('fullName', event.target.value)} type="text" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
                 </label>
                 <label className="space-y-2 text-sm text-[#d8d8dc]">
                   <span>Business name</span>
-                  <input value={profile.businessName} onChange={(event) => updateProfile('businessName', event.target.value)} type="text" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                  <input value={profile.businessName} onChange={(event) => updateProfile('businessName', event.target.value)} type="text" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
                 </label>
                 <label className="space-y-2 text-sm text-[#d8d8dc]">
                   <span>Phone</span>
-                  <input value={profile.phone} onChange={(event) => updateProfile('phone', event.target.value)} type="tel" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                  <input value={profile.phone} onChange={(event) => updateProfile('phone', event.target.value)} type="tel" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
                 </label>
                 <label className="space-y-2 text-sm text-[#d8d8dc]">
                   <span>Selected trade</span>
-                  <select value={profile.trade} onChange={(event) => updateProfile('trade', event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]">
+                  <select value={profile.trade} onChange={(event) => updateProfile('trade', event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]">
                     <option value="">Select your trade</option>
                     {TRADE_OPTIONS.map((trade) => (
                       <option key={trade} value={trade}>
@@ -1063,7 +1160,7 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                 </label>
                 <label className="space-y-2 text-sm text-[#d8d8dc] sm:col-span-2">
                   <span>Short service description</span>
-                  <input value={profile.serviceDescription} onChange={(event) => updateProfile('serviceDescription', event.target.value)} type="text" placeholder="Example: commercial drywall and interiors across Jacksonville" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
+                  <input value={profile.serviceDescription} onChange={(event) => updateProfile('serviceDescription', event.target.value)} type="text" placeholder="Example: commercial drywall and interiors across Jacksonville" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-base text-[#f5f5f7] outline-none transition focus:border-[#ff3b30]" />
                 </label>
               </div>
 
@@ -1078,8 +1175,8 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                 >
                   Save Profile
                 </button>
-                <button onClick={() => setShowOnboarding(true)} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-[#f5f5f7] active:scale-[0.98]">
-                  How it works
+                <button onClick={handleLogout} className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-[#f5f5f7] active:scale-[0.98]">
+                  Log Out
                 </button>
               </div>
 
@@ -1178,74 +1275,6 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
           ))}
         </div>
       </nav>
-
-      {showOnboarding && onboardingReady ? (
-        <div className="fixed inset-0 z-[60] bg-black/92 px-4 py-6">
-          <div className="mx-auto flex h-full w-full max-w-md flex-col justify-end">
-            <div className="rounded-[32px] border border-white/10 bg-[#111113] p-5 shadow-[0_30px_90px_rgba(0,0,0,0.6)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#8e8e93]">BidHammer</div>
-              <div className="mt-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-[#ff3b30]">{APP_VERSION}</div>
-              <div
-                ref={onboardingTrackRef}
-                className="mt-4 flex snap-x snap-mandatory gap-4 overflow-x-auto scroll-smooth pb-2"
-                onScroll={(event) => {
-                  const width = event.currentTarget.clientWidth + 16;
-                  setOnboardingIndex(Math.round(event.currentTarget.scrollLeft / width));
-                }}
-              >
-                {ONBOARDING_CARDS.map((copy) => (
-                  <div key={copy} className="min-w-full snap-center rounded-[28px] border border-white/10 bg-[#1c1c1e] p-6 text-[#f5f5f7]">
-                    <div className="text-3xl leading-tight">{copy}</div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-4 flex items-center justify-between">
-                <div className="flex gap-2">
-                  {ONBOARDING_CARDS.map((_, index) => (
-                    <div key={index} className={clsx('h-2 rounded-full transition-all', onboardingIndex === index ? 'w-6 bg-[#ff3b30]' : 'w-2 bg-white/20')} />
-                  ))}
-                </div>
-                {onboardingIndex < ONBOARDING_CARDS.length - 1 ? (
-                  <button onClick={advanceOnboarding} className="rounded-full bg-[#ff3b30] px-4 py-2 text-sm font-semibold text-white active:scale-[0.98]">
-                    Next
-                  </button>
-                ) : null}
-              </div>
-
-              <div className="mt-5 rounded-[24px] border border-white/10 bg-[#1c1c1e] p-4">
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8e8e93]">Set up your Jacksonville profile</div>
-                <div className="mt-3 grid gap-3">
-                  <input value={profile.email} onChange={(event) => updateProfile('email', event.target.value)} type="email" placeholder="Email" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none" />
-                  <input value={profile.fullName} onChange={(event) => updateProfile('fullName', event.target.value)} type="text" placeholder="Full name" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none" />
-                  <input value={profile.businessName} onChange={(event) => updateProfile('businessName', event.target.value)} type="text" placeholder="Business name" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none" />
-                  <input value={profile.phone} onChange={(event) => updateProfile('phone', event.target.value)} type="tel" placeholder="Phone" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none" />
-                  <select value={profile.trade} onChange={(event) => updateProfile('trade', event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none">
-                    <option value="">Select your trade</option>
-                    {TRADE_OPTIONS.map((trade) => (
-                      <option key={trade} value={trade}>
-                        {trade}
-                      </option>
-                    ))}
-                  </select>
-                  <input value={profile.serviceDescription} onChange={(event) => updateProfile('serviceDescription', event.target.value)} type="text" placeholder="Short service description (optional)" className="w-full rounded-2xl border border-white/10 bg-[#111113] px-4 py-3 text-sm text-[#f5f5f7] outline-none" />
-                </div>
-                <p className="mt-3 text-xs text-[#8e8e93]">Required: email, full name, business name, phone, and trade.</p>
-                <button
-                  onClick={() => saveProfile({ closeOnboarding: true })}
-                  disabled={!isProfileComplete(profile) || onboardingIndex < ONBOARDING_CARDS.length - 1}
-                  className={clsx(
-                    'mt-4 w-full rounded-full px-4 py-3 text-sm font-semibold transition active:scale-[0.98]',
-                    isProfileComplete(profile) && onboardingIndex === ONBOARDING_CARDS.length - 1 ? 'bg-[#ff3b30] text-white' : 'bg-white/10 text-[#636366]'
-                  )}
-                >
-                  Save and Continue
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </>
   );
 }

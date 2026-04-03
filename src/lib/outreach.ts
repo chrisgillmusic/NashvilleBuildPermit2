@@ -9,6 +9,45 @@ export type OutreachProfile = {
   serviceDescription?: string;
 };
 
+type OutreachTemplate = {
+  projectIntro: string;
+  contactIntro: string;
+  close: string;
+};
+
+const OUTREACH_TEMPLATES: OutreachTemplate[] = [
+  { projectIntro: 'I saw the recent permit activity at {{address}}.', contactIntro: 'I saw your recent permit activity at {{address}}.', close: "If you need support on this project, I'd love to connect." },
+  { projectIntro: 'I noticed the permit filed for {{address}}.', contactIntro: 'I noticed the recent permit activity tied to {{address}}.', close: "If you're still filling out trades, I'd be glad to connect." },
+  { projectIntro: 'Reaching out after seeing the work at {{address}}.', contactIntro: 'Reaching out after seeing your permit activity at {{address}}.', close: "If you need help on the scope there, I'd be happy to talk." },
+  { projectIntro: 'Wanted to introduce myself after seeing the permit at {{address}}.', contactIntro: 'Wanted to introduce myself after seeing your recent permit at {{address}}.', close: "If this job still needs trade support, I'd love to connect." },
+  { projectIntro: 'I came across the permit for {{address}}.', contactIntro: 'I came across your recent permit activity at {{address}}.', close: 'If this project needs another trade partner, I would be glad to help.' },
+  { projectIntro: 'I was looking through recent Jacksonville permits and saw {{address}}.', contactIntro: 'I was looking through recent Jacksonville permits and saw your activity at {{address}}.', close: 'If you need support on the work there, I would be glad to connect.' },
+  { projectIntro: 'I saw the permit work tied to {{address}}.', contactIntro: 'I saw your permit work tied to {{address}}.', close: "If you're still lining up help on the project, I'd be happy to talk." },
+  { projectIntro: 'I noticed recent permit activity at {{address}}.', contactIntro: 'I noticed your recent permit activity at {{address}}.', close: "If you'd like another trade contact for the job, I'd love to connect." },
+  { projectIntro: 'I saw the permit scope connected to {{address}}.', contactIntro: 'I saw your recent permit scope connected to {{address}}.', close: 'If you need an extra hand on the project, feel free to reach out.' },
+  { projectIntro: 'I was checking recent permit filings and saw {{address}}.', contactIntro: 'I was checking recent permit filings and saw your work at {{address}}.', close: "If there's still room for support on the job, I'd be glad to connect." },
+  { projectIntro: 'I saw the recent filing for {{address}}.', contactIntro: 'I saw your recent filing for {{address}}.', close: "If you need support on this one, I'd be happy to talk." },
+  { projectIntro: 'I noticed new permit activity at {{address}}.', contactIntro: 'I noticed new permit activity under your name at {{address}}.', close: 'If you need another trade partner, I would be glad to help.' },
+  { projectIntro: 'I came across the work listed for {{address}}.', contactIntro: 'I came across your recent work listed for {{address}}.', close: 'If this project still needs trade coverage, I would be glad to connect.' },
+  { projectIntro: 'I saw the permit details for {{address}} come through.', contactIntro: 'I saw your permit details for {{address}} come through.', close: "If you'd like to compare availability, I'd be glad to talk." },
+  { projectIntro: 'I was reviewing current Jacksonville permit activity and saw {{address}}.', contactIntro: 'I was reviewing current Jacksonville permit activity and saw your permit at {{address}}.', close: 'If you need support on the scope there, I would be glad to connect.' },
+  { projectIntro: 'I noticed the permit filed on {{address}}.', contactIntro: 'I noticed your recent permit filed on {{address}}.', close: "If you need another trade contact for the work, I'd be happy to help." },
+  { projectIntro: 'I saw the recent work filed at {{address}}.', contactIntro: 'I saw your recent work filed at {{address}}.', close: 'If you still need help on the project, I would be glad to talk.' },
+  { projectIntro: 'I came across the permit activity at {{address}}.', contactIntro: 'I came across your recent permit activity at {{address}}.', close: "If there's still trade coverage to line up, I'd love to connect." },
+  { projectIntro: 'I noticed the permit tied to {{address}} in the latest Jacksonville activity.', contactIntro: 'I noticed your permit tied to {{address}} in the latest Jacksonville activity.', close: 'If you need support there, I would be glad to connect.' },
+  { projectIntro: 'I saw the project activity at {{address}} and wanted to reach out.', contactIntro: 'I saw your project activity at {{address}} and wanted to reach out.', close: "If you'd like to keep another trade contact handy, I'd be glad to talk." },
+  { projectIntro: 'I was reviewing recent permits and saw the work at {{address}}.', contactIntro: 'I was reviewing recent permits and saw your work at {{address}}.', close: 'If the project needs support, I would be glad to help.' },
+  { projectIntro: 'I noticed the permit scope at {{address}} and wanted to introduce myself.', contactIntro: 'I noticed your permit scope at {{address}} and wanted to introduce myself.', close: 'If you need another trade partner on the project, feel free to reach out.' },
+  { projectIntro: 'I saw recent permit movement at {{address}}.', contactIntro: 'I saw recent permit movement tied to your team at {{address}}.', close: "If you're still staffing the job, I'd be happy to connect." },
+  { projectIntro: 'I came across the permit for work at {{address}}.', contactIntro: 'I came across your recent permit for work at {{address}}.', close: "If there's a need for support on the scope, I'd be glad to talk." },
+  { projectIntro: 'I noticed the recent permit listed for {{address}}.', contactIntro: 'I noticed your recent permit listed for {{address}}.', close: 'If you need another trade contact, I would be glad to help.' },
+  { projectIntro: 'I saw the permit activity for {{address}} and wanted to reach out directly.', contactIntro: 'I saw your permit activity for {{address}} and wanted to reach out directly.', close: 'If the job still needs support, I would be glad to connect.' },
+  { projectIntro: 'I was watching Jacksonville permit activity and saw {{address}} come up.', contactIntro: 'I was watching Jacksonville permit activity and saw your job at {{address}} come up.', close: "If you need support on that scope, I'd be happy to talk." },
+  { projectIntro: 'I noticed the recent filing connected to {{address}}.', contactIntro: 'I noticed your recent filing connected to {{address}}.', close: "If you're still building out the team, I'd be glad to connect." },
+  { projectIntro: 'I saw the current permit work at {{address}}.', contactIntro: 'I saw your current permit work at {{address}}.', close: 'If you need trade support on the project, I would be glad to help.' },
+  { projectIntro: 'I came across the latest permit at {{address}} and wanted to introduce our company.', contactIntro: 'I came across your latest permit at {{address}} and wanted to introduce our company.', close: "If you'd like to connect on the project, I'd be glad to reach out." }
+];
+
 function clean(value?: string | null): string {
   return (value || '').trim();
 }
@@ -20,45 +59,54 @@ function firstName(value: string): string {
   return first || normalized;
 }
 
-function buildTradeLine(profile: OutreachProfile): string {
-  const trade = clean(profile.trade);
-  const serviceDescription = clean(profile.serviceDescription);
+function buildSignature(profile: OutreachProfile): string {
+  const lines = [
+    [clean(profile.fullName), clean(profile.businessName)].filter(Boolean).join(' - '),
+    [clean(profile.phone), clean(profile.email)].filter(Boolean).join(' | ')
+  ].filter(Boolean);
 
-  if (serviceDescription) return serviceDescription;
-  if (trade) return trade.toLowerCase();
-  return 'commercial subcontracting work';
+  return lines.join('\n');
 }
 
-function buildSignature(profile: OutreachProfile): string {
-  const parts = [clean(profile.fullName), clean(profile.businessName)].filter(Boolean);
-  const contact = [clean(profile.phone), clean(profile.email)].filter(Boolean).join(' | ');
-  return [parts.join(' - '), contact].filter(Boolean).join('\n');
+function encodeMailtoPart(value: string): string {
+  return encodeURIComponent(value);
 }
 
 function buildMailto(email: string, subject: string, body: string): string {
-  const params = new URLSearchParams({
-    subject,
-    body
-  });
-  return `mailto:${email}?${params.toString()}`;
+  return `mailto:${email}?subject=${encodeMailtoPart(subject)}&body=${encodeMailtoPart(body)}`;
 }
 
-export function buildProjectOutreachMailto(project: PermitProject, profile: OutreachProfile): string | null {
+function selectTemplate(index: number): OutreachTemplate {
+  return OUTREACH_TEMPLATES[((index % OUTREACH_TEMPLATES.length) + OUTREACH_TEMPLATES.length) % OUTREACH_TEMPLATES.length];
+}
+
+function buildCommonLine(profile: OutreachProfile): string {
+  const companyName = clean(profile.businessName) || 'my company';
+  const trade = clean(profile.trade).toLowerCase() || 'commercial subcontracting work';
+  return `My company, ${companyName}, specializes in ${trade}.`;
+}
+
+function buildScopeLine(scope: string): string {
+  const normalized = clean(scope);
+  if (!normalized) return '';
+  const sentence = normalized.charAt(0).toLowerCase() + normalized.slice(1);
+  return `The scope looks like ${sentence}.`;
+}
+
+export function buildProjectOutreachMailto(project: PermitProject, profile: OutreachProfile, templateIndex = 0): string | null {
   const email = clean(project.contactEmail);
   if (!email) return null;
 
+  const template = selectTemplate(templateIndex);
   const greetingName = firstName(project.contactName) || 'there';
-  const tradeLine = buildTradeLine(profile);
-  const companyName = clean(profile.businessName) || 'my company';
-  const summary = clean(project.readableSummary || project.purpose || project.permitSubtype || project.permitType);
   const subject = `${clean(profile.trade) || 'Trade support'} for ${project.address}`;
   const body = [
     `Hi ${greetingName},`,
     '',
-    `I saw the permit for ${project.address}.`,
-    `My company, ${companyName}, specializes in ${tradeLine}.`,
-    summary ? `It looks like the scope involves ${summary.charAt(0).toLowerCase()}${summary.slice(1)}.` : '',
-    "If you need help on this project, I'd love to connect.",
+    template.projectIntro.replace('{{address}}', project.address),
+    buildCommonLine(profile),
+    buildScopeLine(project.readableSummary || project.purpose || project.permitSubtype || project.permitType),
+    template.close,
     '',
     buildSignature(profile)
   ]
@@ -68,23 +116,21 @@ export function buildProjectOutreachMailto(project: PermitProject, profile: Outr
   return buildMailto(email, subject, body);
 }
 
-export function buildContactOutreachMailto(contact: ActiveContact, profile: OutreachProfile): string | null {
+export function buildContactOutreachMailto(contact: ActiveContact, profile: OutreachProfile, templateIndex = 0): string | null {
   const email = clean(contact.email);
   if (!email) return null;
 
+  const template = selectTemplate(templateIndex);
   const greetingName = firstName(contact.name) || 'there';
-  const tradeLine = buildTradeLine(profile);
-  const companyName = clean(profile.businessName) || 'my company';
-  const address = clean(contact.mostRecentPermitAddress);
-  const scope = clean(contact.mostRecentPermitSummary || contact.mostRecentPermitType);
-  const subject = `${clean(profile.trade) || 'Trade support'} for ${address || 'your Jacksonville permit work'}`;
+  const address = clean(contact.mostRecentPermitAddress) || 'your Jacksonville permit work';
+  const subject = `${clean(profile.trade) || 'Trade support'} for ${address}`;
   const body = [
     `Hi ${greetingName},`,
     '',
-    address ? `I saw the recent permit activity at ${address}.` : 'I saw your recent permit activity in Jacksonville.',
-    `My company, ${companyName}, specializes in ${tradeLine}.`,
-    scope ? `The recent scope looked like ${scope.charAt(0).toLowerCase()}${scope.slice(1)}.` : '',
-    "If you need help on this project, I'd love to connect.",
+    template.contactIntro.replace('{{address}}', address),
+    buildCommonLine(profile),
+    buildScopeLine(contact.mostRecentPermitSummary || contact.mostRecentPermitType || ''),
+    template.close,
     '',
     buildSignature(profile)
   ]
@@ -93,3 +139,5 @@ export function buildContactOutreachMailto(contact: ActiveContact, profile: Outr
 
   return buildMailto(email, subject, body);
 }
+
+export const OUTREACH_TEMPLATE_COUNT = OUTREACH_TEMPLATES.length;
