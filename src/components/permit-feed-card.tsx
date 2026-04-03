@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { formatCurrency, formatPhone } from '@/lib/format';
 import { buildVisibleInsight } from '@/lib/permits/trade-utils';
 import type { PermitProject } from '@/lib/permits/types';
@@ -42,12 +42,6 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
   const [imageFallback, setImageFallback] = useState(false);
   const [pressed, setPressed] = useState(false);
   const placeholderImage = placeholderImageForProject(project);
-  const articleRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!expanded) return;
-    articleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, [expanded]);
 
   function triggerHaptic() {
     if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
@@ -63,7 +57,6 @@ export function PermitFeedCard({ project, trade, expanded, onToggle }: Props) {
 
   return (
     <article
-      ref={articleRef}
       className={clsx(
         'origin-top overflow-hidden rounded-[26px] border border-white/10 bg-[linear-gradient(180deg,rgba(34,34,37,0.96)_0%,rgba(24,24,27,0.98)_100%)]',
         pressed
