@@ -750,37 +750,41 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
       <main className="mx-auto min-h-screen w-full max-w-5xl px-4 pb-32 pt-4 sm:px-6">
         {activeTab === 'jobs' ? (
           <section>
-            <header className="px-1 pb-8 pt-3">
-              <div className="flex items-start justify-between gap-4 border-b border-white/8 pb-5">
-                <div>
-                  <div className="text-4xl font-semibold tracking-[-0.04em] text-[#f5f5f7]">{format(new Date(), 'MMMM d')}</div>
-                  <p className="mt-3 max-w-[15.5rem] text-sm leading-6 text-[#b3b3b8] sm:max-w-[19rem]">{buildHeaderSummary(profile.trade)}</p>
+            <div className="sticky top-0 z-20 bg-black/95 pb-3 pt-3 backdrop-blur-[2px]">
+              <header className="px-1">
+                <div className="flex items-start justify-between gap-4 pb-5">
+                  <div>
+                    <div className="text-4xl font-semibold tracking-[-0.04em] text-[#f5f5f7]">{format(new Date(), 'MMMM d')}</div>
+                    <p className="mt-3 max-w-[15.5rem] text-sm leading-6 text-[#b3b3b8] sm:max-w-[19rem]">{buildHeaderSummary(profile.trade)}</p>
+                  </div>
+                  <div className="flex flex-col items-end pt-1">
+                    {logoFallback ? (
+                      <div className="text-right">
+                        <div className="text-xs uppercase tracking-[0.32em] text-[#8e8e93]">BidHammer</div>
+                      </div>
+                    ) : (
+                      <img
+                        src="/brand/bh-logo.png"
+                        alt="BidHammer"
+                        width={148}
+                        height={52}
+                        className="h-auto w-[132px] object-contain sm:w-[148px]"
+                        onError={() => setLogoFallback(true)}
+                      />
+                    )}
+                  </div>
                 </div>
-                <div className="flex flex-col items-end pt-1">
-                  {logoFallback ? (
-                    <div className="text-right">
-                      <div className="text-xs uppercase tracking-[0.32em] text-[#8e8e93]">BidHammer</div>
-                    </div>
-                  ) : (
-                    <img
-                      src="/brand/bh-logo.png"
-                      alt="BidHammer"
-                      width={132}
-                      height={46}
-                      className="h-auto w-[118px] object-contain sm:w-[132px]"
-                      onError={() => setLogoFallback(true)}
-                    />
-                  )}
-                </div>
+              </header>
+              <div className="px-1">
+                <div className="h-px w-full bg-white/20" />
               </div>
-            </header>
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-3 shadow-[0_10px_12px_rgba(0,0,0,0.22)]" />
+            </div>
 
-            <div className="relative space-y-10">
-              <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-16 bg-[linear-gradient(180deg,rgba(0,0,0,0.96)_0%,rgba(0,0,0,0.72)_42%,rgba(0,0,0,0)_100%)]" />
+            <div className="space-y-10 pt-4">
               {feedSections.map((section) => (
                 <section key={section.key} className="space-y-4">
                   <div className="space-y-3">
-                    {section.key === 'new' ? <div className="h-px w-full bg-white/20" /> : null}
                     <div className="flex items-end justify-between gap-3">
                       <div className="flex flex-wrap items-baseline gap-2">
                         <h2 className="text-2xl font-semibold text-[#ff3b30]">{section.title}</h2>
