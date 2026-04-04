@@ -1,9 +1,10 @@
-import type { PermitHarvesterFilters, NormalizedPermit } from '../types';
+import type { HarvestCoverage, PermitHarvesterFilters, NormalizedPermit } from '../types';
 
 export type SourceLog = (level: 'info' | 'warn' | 'error', message: string) => void;
 
 export type SourceFetchResult = {
   permits: NormalizedPermit[];
+  coverage: HarvestCoverage;
   notes?: string[];
 };
 

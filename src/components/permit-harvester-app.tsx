@@ -1,7 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import type { CitySourceSummary, HarvestLogEntry, HarvestRunResult, NormalizedPermit, PermitHarvesterFilters } from '@/lib/permit-harvester/types';
+import type {
+  CitySourceSummary,
+  HarvestCoverage,
+  HarvestLogEntry,
+  HarvestRunResult,
+  NormalizedPermit,
+  PermitDateRangeSummary,
+  PermitHarvesterFilters
+} from '@/lib/permit-harvester/types';
 
 function formatCurrency(value: number | null): string {
   if (value === null) return 'N/A';
@@ -33,6 +41,15 @@ function formatDateTime(value: string): string {
     hour: 'numeric',
     minute: '2-digit'
   }).format(parsed);
+}
+
+function formatCompactNumber(value: number): string {
+  return new Intl.NumberFormat('en-US').format(value);
+}
+
+function formatDateRange(range: PermitDateRangeSummary): string {
+  if (!range.earliest || !range.latest) return 'N/A';
+  return `${formatDate(range.earliest)} to ${formatDate(range.latest)}`;
 }
 
 function slugify(value: string): string {
@@ -93,6 +110,39 @@ function formatLogLine(entry: HarvestLogEntry): string {
   return `${formatDateTime(entry.timestamp)} [${entry.level.toUpperCase()}] ${entry.message}`;
 }
 
+function formatStopReason(value: string): string {
+  if (value === 'dateBoundary') return 'Date boundary';
+  if (value === 'noResults') return 'No results';
+  if (value === 'exhausted') return 'Exhausted';
+  if (value === 'error') return 'Error';
+  return value;
+}
+
+function buildJsonExportPayload(result: HarvestRunResult) {
+  return {
+    metadata: {
+      cityId: result.cityId,
+      cityLabel: result.cityLabel,
+      sourceLabel: result.sourceLabel,
+      mode: result.mode,
+      pulledAt: result.pulledAt,
+      filters: result.filters,
+      searchTermsUsed: result.coverage.searchTerms,
+      termsSearched: result.coverage.termsSearched,
+      pagesWalked: result.coverage.pagesWalked,
+      rawFetchedCount: result.coverage.rawFetchedCount,
+      rawInCoverageCount: result.coverage.rawInCoverageCount,
+      dedupedCount: result.coverage.uniquePermitCount,
+      duplicatesRemoved: result.coverage.duplicatesRemoved,
+      exportCount: result.permits.length,
+      harvestedDateRange: result.coverage.harvestedDateRange,
+      filteredDateRange: result.coverage.filteredDateRange,
+      perSearchTerm: result.coverage.termCoverage
+    },
+    permits: result.permits
+  };
+}
+
 type PermitHarvesterAppProps = {
   sources: CitySourceSummary[];
   initialCityId: string;
@@ -105,14 +155,17 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
   const [result, setResult] = useState<HarvestRunResult | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [localLogs, setLocalLogs] = useState<HarvestLogEntry[]>([]);
+  const [lastExport, setLastExport] = useState<{ fileName: string; count: number; at: string } | null>(null);
 
   const currentSource = sources.find((source) => source.id === cityId) || initialSource;
   const permitTypeOptions = result?.availablePermitTypes || [];
   const logLines = [...(result?.logs || []), ...localLogs].map(formatLogLine);
+  const coverage: HarvestCoverage | null = result?.coverage || null;
 
   async function runHarvester(): Promise<void> {
     setIsRunning(true);
     setLocalLogs([]);
+    setLastExport(null);
 
     try {
       const response = await fetch('/api/permit-harvester/run', {
@@ -155,6 +208,7 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
     setCityId(nextCityId);
     setFilters(nextSource.defaultFilters);
     setResult(null);
+    setLastExport(null);
     setLocalLogs([
       {
         timestamp: new Date().toISOString(),
@@ -164,13 +218,18 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
     ]);
   }
 
-  function appendExportLog(fileName: string): void {
+  function appendExportLog(fileName: string, count: number): void {
+    setLastExport({
+      fileName,
+      count,
+      at: new Date().toISOString()
+    });
     setLocalLogs((current) => [
       ...current,
       {
         timestamp: new Date().toISOString(),
         level: 'info',
-        message: `Exported ${result?.permits.length || 0} permits to ${fileName}.`
+        message: `Exported ${count} permits to ${fileName}.`
       }
     ]);
   }
@@ -178,15 +237,15 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
   function exportJson(): void {
     if (!result?.permits.length) return;
     const fileName = buildExportFileName(result.cityLabel, 'json');
-    downloadFile(fileName, JSON.stringify(result.permits, null, 2), 'application/json');
-    appendExportLog(fileName);
+    downloadFile(fileName, JSON.stringify(buildJsonExportPayload(result), null, 2), 'application/json');
+    appendExportLog(fileName, result.permits.length);
   }
 
   function exportCsv(): void {
     if (!result?.permits.length) return;
     const fileName = buildExportFileName(result.cityLabel, 'csv');
     downloadFile(fileName, permitsToCsv(result.permits), 'text/csv;charset=utf-8');
-    appendExportLog(fileName);
+    appendExportLog(fileName, result.permits.length);
   }
 
   return (
@@ -323,17 +382,45 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
               <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">Status</h2>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
-                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Fetched</p>
-                  <p className="mt-1 text-2xl font-semibold text-white">{result?.fetchedCount ?? 0}</p>
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Raw rows</p>
+                  <p className="mt-1 text-2xl font-semibold text-white">{formatCompactNumber(coverage?.rawFetchedCount ?? 0)}</p>
                 </div>
                 <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
-                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Survived filters</p>
-                  <p className="mt-1 text-2xl font-semibold text-white">{result?.filteredCount ?? 0}</p>
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Unique harvested</p>
+                  <p className="mt-1 text-2xl font-semibold text-white">{formatCompactNumber(coverage?.uniquePermitCount ?? 0)}</p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Duplicates removed</p>
+                  <p className="mt-1 text-2xl font-semibold text-white">{formatCompactNumber(coverage?.duplicatesRemoved ?? 0)}</p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Export-ready</p>
+                  <p className="mt-1 text-2xl font-semibold text-white">{formatCompactNumber(result?.filteredCount ?? 0)}</p>
                 </div>
               </div>
               <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950 p-3 text-sm text-slate-300">
                 <p>Last run: {result ? formatDateTime(result.pulledAt) : 'Not run yet'}</p>
+                <p className="mt-1">Terms searched: {formatCompactNumber(coverage?.termsSearched ?? 0)} • Pages walked: {formatCompactNumber(coverage?.pagesWalked ?? 0)}</p>
                 {result?.error ? <p className="mt-2 text-rose-300">Error: {result.error}</p> : null}
+                {lastExport ? <p className="mt-2 text-emerald-300">Last export: {lastExport.fileName} ({lastExport.count} permits at {formatDateTime(lastExport.at)})</p> : null}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">Coverage</h2>
+              <div className="mt-3 space-y-3 text-sm text-slate-300">
+                <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Harvest date range</p>
+                  <p className="mt-1 text-white">{coverage ? formatDateRange(coverage.harvestedDateRange) : 'N/A'}</p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Filtered result date range</p>
+                  <p className="mt-1 text-white">{coverage ? formatDateRange(coverage.filteredDateRange) : 'N/A'}</p>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Sweep terms used</p>
+                  <p className="mt-1 text-white">{coverage?.searchTerms.length ? coverage.searchTerms.join(', ') : 'No run yet'}</p>
+                </div>
               </div>
             </div>
 
@@ -353,7 +440,9 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
                 <div>
                   <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">Results</h2>
                   <p className="mt-1 text-sm text-slate-300">
-                    {result ? `Showing ${result.filteredCount} of ${result.fetchedCount} fetched permits.` : 'Run the harvester to load permit records.'}
+                    {result
+                      ? `Showing ${formatCompactNumber(result.filteredCount)} filtered permits from ${formatCompactNumber(coverage?.uniquePermitCount ?? result.fetchedCount)} unique harvested permits.`
+                      : 'Run the harvester to load permit records.'}
                   </p>
                 </div>
                 {result ? <p className="text-xs text-slate-500">Pulled {formatDateTime(result.pulledAt)}</p> : null}
@@ -398,6 +487,57 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
                       <tr>
                         <td className="px-3 py-8 text-sm text-slate-500" colSpan={7}>
                           No results loaded yet.
+                        </td>
+                      </tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">Term Coverage</h2>
+                  <p className="mt-1 text-sm text-slate-300">Per-search-bucket raw counts, pages walked, new unique permits added, and dedupe behavior.</p>
+                </div>
+              </div>
+
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
+                  <thead>
+                    <tr className="text-slate-400">
+                      <th className="border-b border-slate-800 px-3 py-2 font-medium">Term</th>
+                      <th className="border-b border-slate-800 px-3 py-2 font-medium">Raw</th>
+                      <th className="border-b border-slate-800 px-3 py-2 font-medium">In window</th>
+                      <th className="border-b border-slate-800 px-3 py-2 font-medium">New unique</th>
+                      <th className="border-b border-slate-800 px-3 py-2 font-medium">Dupes</th>
+                      <th className="border-b border-slate-800 px-3 py-2 font-medium">Pages</th>
+                      <th className="border-b border-slate-800 px-3 py-2 font-medium">Date range</th>
+                      <th className="border-b border-slate-800 px-3 py-2 font-medium">Stop</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {coverage?.termCoverage.map((term) => (
+                      <tr key={term.term} className="align-top text-slate-200">
+                        <td className="border-b border-slate-900 px-3 py-3 font-medium text-white">{term.term}</td>
+                        <td className="border-b border-slate-900 px-3 py-3">{formatCompactNumber(term.rawFetchedCount)}</td>
+                        <td className="border-b border-slate-900 px-3 py-3">{formatCompactNumber(term.rawInCoverageCount)}</td>
+                        <td className="border-b border-slate-900 px-3 py-3">{formatCompactNumber(term.uniquePermitCount)}</td>
+                        <td className="border-b border-slate-900 px-3 py-3">{formatCompactNumber(term.duplicateCount)}</td>
+                        <td className="border-b border-slate-900 px-3 py-3">{formatCompactNumber(term.pagesWalked)}</td>
+                        <td className="border-b border-slate-900 px-3 py-3">{formatDateRange(term.dateRange)}</td>
+                        <td className="border-b border-slate-900 px-3 py-3">
+                          <div>{formatStopReason(term.stopReason)}</div>
+                          <div className="mt-1 text-xs text-slate-500">{term.totalAvailableCount !== null ? `Source count ${formatCompactNumber(term.totalAvailableCount)}` : 'Source count unavailable'}</div>
+                          {term.error ? <div className="mt-1 text-xs text-rose-300">{term.error}</div> : null}
+                        </td>
+                      </tr>
+                    ))}
+                    {!coverage?.termCoverage.length ? (
+                      <tr>
+                        <td className="px-3 py-8 text-sm text-slate-500" colSpan={8}>
+                          Run the harvester to inspect per-term coverage.
                         </td>
                       </tr>
                     ) : null}

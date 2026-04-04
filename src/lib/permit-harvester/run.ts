@@ -1,6 +1,6 @@
 import { applyPermitFilters, normalizeFilters } from './filters';
 import { getCitySource } from './sources';
-import type { HarvestLogEntry, HarvestRunResult, PermitHarvesterFilters } from './types';
+import type { HarvestCoverage, HarvestLogEntry, HarvestRunResult, NormalizedPermit, PermitDateRangeSummary, PermitHarvesterFilters } from './types';
 
 function appendLog(logs: HarvestLogEntry[], level: 'info' | 'warn' | 'error', message: string): void {
   logs.push({
@@ -8,6 +8,49 @@ function appendLog(logs: HarvestLogEntry[], level: 'info' | 'warn' | 'error', me
     level,
     message
   });
+}
+
+function buildDateRangeSummary(permits: NormalizedPermit[]): PermitDateRangeSummary {
+  const timestamps = permits
+    .map((permit) => {
+      const parsed = new Date(permit.dateIssued);
+      return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+    })
+    .filter((value) => value > 0)
+    .sort((left, right) => left - right);
+
+  if (!timestamps.length) {
+    return {
+      earliest: null,
+      latest: null
+    };
+  }
+
+  return {
+    earliest: new Date(timestamps[0]).toISOString(),
+    latest: new Date(timestamps[timestamps.length - 1]).toISOString()
+  };
+}
+
+function emptyCoverage(): HarvestCoverage {
+  return {
+    searchTerms: [],
+    termsSearched: 0,
+    pagesWalked: 0,
+    rawFetchedCount: 0,
+    rawInCoverageCount: 0,
+    uniquePermitCount: 0,
+    duplicatesRemoved: 0,
+    harvestedDateRange: {
+      earliest: null,
+      latest: null
+    },
+    filteredDateRange: {
+      earliest: null,
+      latest: null
+    },
+    termCoverage: []
+  };
 }
 
 export async function runPermitHarvester(cityId: string, rawFilters?: Partial<PermitHarvesterFilters>): Promise<HarvestRunResult> {
@@ -24,6 +67,7 @@ export async function runPermitHarvester(cityId: string, rawFilters?: Partial<Pe
       filters,
       fetchedCount: 0,
       filteredCount: 0,
+      coverage: emptyCoverage(),
       availablePermitTypes: [],
       permits: [],
       logs: [
@@ -48,7 +92,13 @@ export async function runPermitHarvester(cityId: string, rawFilters?: Partial<Pe
     });
 
     const filteredPermits = applyPermitFilters(fetched.permits, filters);
-    appendLog(logs, 'info', `Fetched ${fetched.permits.length} normalized permits.`);
+    const coverage: HarvestCoverage = {
+      ...fetched.coverage,
+      filteredDateRange: buildDateRangeSummary(filteredPermits)
+    };
+
+    appendLog(logs, 'info', `Harvested ${coverage.uniquePermitCount} unique permits from ${coverage.rawFetchedCount} raw source rows.`);
+    appendLog(logs, 'info', `Removed ${coverage.duplicatesRemoved} duplicates during sweep merge.`);
     appendLog(logs, 'info', `${filteredPermits.length} permits remain after the current filters.`);
 
     const availablePermitTypes = Array.from(new Set(fetched.permits.map((permit) => permit.type).filter(Boolean))).sort((left, right) =>
@@ -63,6 +113,7 @@ export async function runPermitHarvester(cityId: string, rawFilters?: Partial<Pe
       filters,
       fetchedCount: fetched.permits.length,
       filteredCount: filteredPermits.length,
+      coverage,
       availablePermitTypes,
       permits: filteredPermits,
       logs,
@@ -82,6 +133,7 @@ export async function runPermitHarvester(cityId: string, rawFilters?: Partial<Pe
       filters,
       fetchedCount: 0,
       filteredCount: 0,
+      coverage: emptyCoverage(),
       availablePermitTypes: [],
       permits: [],
       logs,

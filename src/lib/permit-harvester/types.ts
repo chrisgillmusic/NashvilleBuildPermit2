@@ -39,6 +39,39 @@ export type HarvestLogEntry = {
   message: string;
 };
 
+export type PermitDateRangeSummary = {
+  earliest: string | null;
+  latest: string | null;
+};
+
+export type HarvestStopReason = 'noResults' | 'exhausted' | 'dateBoundary' | 'error';
+
+export type HarvestTermCoverage = {
+  term: string;
+  rawFetchedCount: number;
+  rawInCoverageCount: number;
+  uniquePermitCount: number;
+  duplicateCount: number;
+  pagesWalked: number;
+  totalAvailableCount: number | null;
+  dateRange: PermitDateRangeSummary;
+  stopReason: HarvestStopReason;
+  error: string | null;
+};
+
+export type HarvestCoverage = {
+  searchTerms: string[];
+  termsSearched: number;
+  pagesWalked: number;
+  rawFetchedCount: number;
+  rawInCoverageCount: number;
+  uniquePermitCount: number;
+  duplicatesRemoved: number;
+  harvestedDateRange: PermitDateRangeSummary;
+  filteredDateRange: PermitDateRangeSummary;
+  termCoverage: HarvestTermCoverage[];
+};
+
 export type CitySourceSummary = {
   id: string;
   cityLabel: string;
@@ -56,6 +89,7 @@ export type HarvestRunResult = {
   filters: PermitHarvesterFilters;
   fetchedCount: number;
   filteredCount: number;
+  coverage: HarvestCoverage;
   availablePermitTypes: string[];
   permits: NormalizedPermit[];
   logs: HarvestLogEntry[];
