@@ -169,9 +169,27 @@ function projectsForTimeframe(projects: PermitProject[], timeframe: TimeframeKey
   });
 }
 
-function buildHeaderSummary(trade: string): string {
-  const label = trade || 'Drywall';
-  return `${label} looks slow this week. Interior build-outs are carrying volume.`;
+function normalizeTradeKey(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function buildHeaderSummary(payload: DashboardPayload, trade: string): string {
+  const marketPulse = payload.marketPulse;
+  if (!marketPulse) return 'Market activity data is updating.';
+
+  const tradeStatusEntries = Object.entries(marketPulse.tradeStatus || {});
+  if (trade.trim()) {
+    const normalizedTrade = normalizeTradeKey(trade);
+    const matchedStatus = tradeStatusEntries.find(([key]) => {
+      const normalizedKey = normalizeTradeKey(key);
+      return normalizedKey === normalizedTrade || normalizedKey.includes(normalizedTrade) || normalizedTrade.includes(normalizedKey);
+    })?.[1];
+
+    if (matchedStatus?.message) return matchedStatus.message;
+  }
+
+  if (marketPulse.overallSummary) return marketPulse.overallSummary;
+  return 'Market activity data is updating.';
 }
 
 function sectionLabel(key: TimeframeKey): { title: string; subtitle: string } {
@@ -949,7 +967,7 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                 <div className="flex items-start justify-between gap-4 pb-5">
                   <div>
                     <div className="text-4xl font-semibold tracking-[-0.04em] text-[#f5f5f7]">{format(new Date(), 'MMMM d')}</div>
-                    <p className="mt-3 max-w-[15.5rem] text-sm leading-6 text-[#b3b3b8] sm:max-w-[19rem]">{buildHeaderSummary(profile.trade)}</p>
+                    <p className="mt-3 max-w-[15.5rem] text-sm leading-6 text-[#b3b3b8] sm:max-w-[19rem]">{buildHeaderSummary(payload, profile.trade)}</p>
                   </div>
                   <div className="flex flex-col items-end pt-1">
                     {logoFallback ? (

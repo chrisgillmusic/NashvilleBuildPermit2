@@ -67,9 +67,11 @@ export async function runPermitHarvester(cityId: string, rawFilters?: Partial<Pe
       filters,
       fetchedCount: 0,
       filteredCount: 0,
+      exportCount: 0,
       coverage: emptyCoverage(),
       availablePermitTypes: [],
       permits: [],
+      filteredPermits: [],
       logs: [
         {
           timestamp: new Date().toISOString(),
@@ -100,6 +102,7 @@ export async function runPermitHarvester(cityId: string, rawFilters?: Partial<Pe
     appendLog(logs, 'info', `Harvested ${coverage.uniquePermitCount} unique permits from ${coverage.rawFetchedCount} raw source rows.`);
     appendLog(logs, 'info', `Removed ${coverage.duplicatesRemoved} duplicates during sweep merge.`);
     appendLog(logs, 'info', `${filteredPermits.length} permits remain after the current filters.`);
+    appendLog(logs, 'info', `${fetched.permits.length} permits are available to export in the full deduped set.`);
 
     const availablePermitTypes = Array.from(new Set(fetched.permits.map((permit) => permit.type).filter(Boolean))).sort((left, right) =>
       left.localeCompare(right)
@@ -113,9 +116,11 @@ export async function runPermitHarvester(cityId: string, rawFilters?: Partial<Pe
       filters,
       fetchedCount: fetched.permits.length,
       filteredCount: filteredPermits.length,
+      exportCount: fetched.permits.length,
       coverage,
       availablePermitTypes,
-      permits: filteredPermits,
+      permits: fetched.permits,
+      filteredPermits,
       logs,
       pulledAt: new Date().toISOString(),
       notes: [...source.notes, ...(fetched.notes || [])],
@@ -133,9 +138,11 @@ export async function runPermitHarvester(cityId: string, rawFilters?: Partial<Pe
       filters,
       fetchedCount: 0,
       filteredCount: 0,
+      exportCount: 0,
       coverage: emptyCoverage(),
       availablePermitTypes: [],
       permits: [],
+      filteredPermits: [],
       logs,
       pulledAt: new Date().toISOString(),
       notes: source.notes,

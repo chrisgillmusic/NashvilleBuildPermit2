@@ -89,9 +89,11 @@ export type HarvestRunResult = {
   filters: PermitHarvesterFilters;
   fetchedCount: number;
   filteredCount: number;
+  exportCount: number;
   coverage: HarvestCoverage;
   availablePermitTypes: string[];
   permits: NormalizedPermit[];
+  filteredPermits: NormalizedPermit[];
   logs: HarvestLogEntry[];
   pulledAt: string;
   notes: string[];

@@ -69,6 +69,18 @@ export type SummaryStats = {
   activeContacts: number;
 };
 
+export type MarketPulseTradeStatus = {
+  label: string;
+  message: string;
+};
+
+export type MarketPulse = {
+  generatedAt: string;
+  windowDays: number;
+  overallSummary: string;
+  tradeStatus: Record<string, MarketPulseTradeStatus>;
+};
+
 export type ActiveContact = {
   name: string;
   projectCount: number;
@@ -87,6 +99,7 @@ export type ActiveContact = {
 export type DashboardPayload = {
   filters: DashboardFilters;
   summary: SummaryStats;
+  marketPulse?: MarketPulse | null;
   featured: PermitProject[];
   projects: PermitProject[];
   activeContacts: ActiveContact[];

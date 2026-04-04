@@ -119,6 +119,8 @@ function formatStopReason(value: string): string {
 }
 
 function buildJsonExportPayload(result: HarvestRunResult) {
+  const actualExportedRowCount = result.permits.length;
+
   return {
     metadata: {
       cityId: result.cityId,
@@ -134,10 +136,13 @@ function buildJsonExportPayload(result: HarvestRunResult) {
       rawInCoverageCount: result.coverage.rawInCoverageCount,
       dedupedCount: result.coverage.uniquePermitCount,
       duplicatesRemoved: result.coverage.duplicatesRemoved,
-      exportCount: result.permits.length,
+      exportCount: result.exportCount,
+      actualExportedRowCount,
+      filteredTableCount: result.filteredCount,
       harvestedDateRange: result.coverage.harvestedDateRange,
       filteredDateRange: result.coverage.filteredDateRange,
-      perSearchTerm: result.coverage.termCoverage
+      perSearchTerm: result.coverage.termCoverage,
+      exportWarning: result.exportCount !== actualExportedRowCount ? 'Export metadata count does not match actual permits array length.' : null
     },
     permits: result.permits
   };
@@ -161,6 +166,8 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
   const permitTypeOptions = result?.availablePermitTypes || [];
   const logLines = [...(result?.logs || []), ...localLogs].map(formatLogLine);
   const coverage: HarvestCoverage | null = result?.coverage || null;
+  const tablePermits = result?.filteredPermits || [];
+  const exportCountMismatch = result ? result.exportCount !== result.permits.length : false;
 
   async function runHarvester(): Promise<void> {
     setIsRunning(true);
@@ -395,13 +402,14 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
                 </div>
                 <div className="rounded-lg border border-slate-800 bg-slate-950 p-3">
                   <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Export-ready</p>
-                  <p className="mt-1 text-2xl font-semibold text-white">{formatCompactNumber(result?.filteredCount ?? 0)}</p>
+                  <p className="mt-1 text-2xl font-semibold text-white">{formatCompactNumber(result?.exportCount ?? 0)}</p>
                 </div>
               </div>
               <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950 p-3 text-sm text-slate-300">
                 <p>Last run: {result ? formatDateTime(result.pulledAt) : 'Not run yet'}</p>
                 <p className="mt-1">Terms searched: {formatCompactNumber(coverage?.termsSearched ?? 0)} • Pages walked: {formatCompactNumber(coverage?.pagesWalked ?? 0)}</p>
                 {result?.error ? <p className="mt-2 text-rose-300">Error: {result.error}</p> : null}
+                {exportCountMismatch ? <p className="mt-2 text-amber-300">Warning: export metadata count does not match the actual exported permit row count.</p> : null}
                 {lastExport ? <p className="mt-2 text-emerald-300">Last export: {lastExport.fileName} ({lastExport.count} permits at {formatDateTime(lastExport.at)})</p> : null}
               </div>
             </div>
@@ -441,7 +449,7 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
                   <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">Results</h2>
                   <p className="mt-1 text-sm text-slate-300">
                     {result
-                      ? `Showing ${formatCompactNumber(result.filteredCount)} filtered permits from ${formatCompactNumber(coverage?.uniquePermitCount ?? result.fetchedCount)} unique harvested permits.`
+                      ? `Showing ${formatCompactNumber(result.filteredCount)} filtered permits in the table, with ${formatCompactNumber(result.exportCount)} permits in the full export set.`
                       : 'Run the harvester to load permit records.'}
                   </p>
                 </div>
@@ -462,7 +470,7 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
                     </tr>
                   </thead>
                   <tbody>
-                    {result?.permits.map((permit) => (
+                    {tablePermits.map((permit) => (
                       <tr key={permit.id} className="align-top text-slate-200">
                         <td className="border-b border-slate-900 px-3 py-3 whitespace-nowrap">{formatDate(permit.dateIssued)}</td>
                         <td className="border-b border-slate-900 px-3 py-3">
@@ -483,7 +491,7 @@ export function PermitHarvesterApp({ sources, initialCityId }: PermitHarvesterAp
                         </td>
                       </tr>
                     ))}
-                    {!result?.permits.length ? (
+                    {!tablePermits.length ? (
                       <tr>
                         <td className="px-3 py-8 text-sm text-slate-500" colSpan={7}>
                           No results loaded yet.

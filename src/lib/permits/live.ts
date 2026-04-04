@@ -21,7 +21,7 @@ import {
   type TruthStageResult
 } from './ai';
 import { JACKSONVILLE_SNAPSHOT, type JacksonvilleSnapshotRecord } from './jacksonville-snapshot';
-import type { ActiveContact, ApplicableTrade, DashboardFilters, DashboardPayload, OutreachDraft, PermitProject, SummaryStats } from './types';
+import type { ActiveContact, ApplicableTrade, DashboardFilters, DashboardPayload, MarketPulse, OutreachDraft, PermitProject, SummaryStats } from './types';
 
 const JAX_API_BASE =
   process.env.JAX_PERMITS_API_URL ||
@@ -147,8 +147,24 @@ type JacksonvilleMergedRecord = {
   };
 };
 
+type JacksonvilleMergedMarketPulse = {
+  generatedAt?: string;
+  windowDays?: number;
+  overallSummary?: string;
+  tradeStatus?: Record<string, { label?: string; message?: string }>;
+};
+
+type JacksonvilleMergedDataset = {
+  datasetMeta?: {
+    marketPulse?: JacksonvilleMergedMarketPulse;
+  };
+  records?: JacksonvilleMergedRecord[];
+  items?: JacksonvilleMergedRecord[];
+};
+
 type CacheValue = {
   projects: PermitProject[];
+  marketPulse: MarketPulse | null;
   fetchedAt: number;
 };
 
@@ -175,12 +191,33 @@ async function readJacksonvilleJsonRecords(): Promise<JacksonvilleJsonRecord[] |
   }
 }
 
-async function readJacksonvilleMergedRecords(): Promise<JacksonvilleMergedRecord[] | null> {
+async function readJacksonvilleMergedRecords(): Promise<{ records: JacksonvilleMergedRecord[]; marketPulse: MarketPulse | null } | null> {
   try {
     await access(JACKSONVILLE_MERGED_PATH);
     const raw = await readFile(JACKSONVILLE_MERGED_PATH, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as JacksonvilleMergedRecord[]) : null;
+    if (Array.isArray(parsed)) {
+      return {
+        records: parsed as JacksonvilleMergedRecord[],
+        marketPulse: null
+      };
+    }
+
+    if (parsed && typeof parsed === 'object') {
+      const dataset = parsed as JacksonvilleMergedDataset;
+      const records = Array.isArray(dataset.records)
+        ? dataset.records
+        : Array.isArray(dataset.items)
+        ? dataset.items
+        : [];
+
+      return {
+        records,
+        marketPulse: normalizeMarketPulse(dataset.datasetMeta?.marketPulse)
+      };
+    }
+
+    return null;
   } catch {
     return null;
   }
@@ -371,6 +408,30 @@ function normalizeOutreachByTrade(outreachByTrade: JacksonvilleMergedContent['ou
     .filter(([, draft]) => draft.subject || draft.body);
 
   return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+function normalizeMarketPulse(value: JacksonvilleMergedMarketPulse | undefined): MarketPulse | null {
+  if (!value) return null;
+
+  const overallSummary = getText(value.overallSummary);
+  const tradeStatusEntries = Object.entries(value.tradeStatus || {})
+    .map(([trade, status]) => [
+      trade,
+      {
+        label: getText(status?.label),
+        message: getText(status?.message)
+      }
+    ] as const)
+    .filter(([, status]) => status.message);
+
+  if (!overallSummary && !tradeStatusEntries.length) return null;
+
+  return {
+    generatedAt: getText(value.generatedAt),
+    windowDays: getNumeric(value.windowDays) ?? 7,
+    overallSummary,
+    tradeStatus: Object.fromEntries(tradeStatusEntries)
+  };
 }
 
 function toSentenceCase(value: string): string {
@@ -1164,8 +1225,8 @@ async function loadProjects(): Promise<CacheValue> {
   inflight = (async () => {
     const mergedRecords = await readJacksonvilleMergedRecords();
     const jsonRecords = await readJacksonvilleJsonRecords();
-    const projects = (mergedRecords?.length
-      ? mergedRecords.map(projectFromMergedRecord).filter((project): project is PermitProject => Boolean(project))
+    const projects = (mergedRecords?.records.length
+      ? mergedRecords.records.map(projectFromMergedRecord).filter((project): project is PermitProject => Boolean(project))
       : jsonRecords?.length
       ? jsonRecords.map(projectFromJsonRecord).filter((project): project is PermitProject => Boolean(project))
       : JACKSONVILLE_SNAPSHOT.map(projectFromSnapshot))
@@ -1174,7 +1235,7 @@ async function loadProjects(): Promise<CacheValue> {
         return right.issueDate.localeCompare(left.issueDate);
       });
 
-    const nextCache = { projects, fetchedAt: Date.now() };
+    const nextCache = { projects, marketPulse: mergedRecords?.marketPulse || null, fetchedAt: Date.now() };
     cache = nextCache;
     inflight = null;
     return nextCache;
@@ -1352,7 +1413,7 @@ function buildDebugPayload(
 }
 
 export async function getDashboardPayload(input?: Partial<DashboardFilters>, trade = ''): Promise<DashboardPayload> {
-  const { projects, fetchedAt } = await loadProjects();
+  const { projects, marketPulse, fetchedAt } = await loadProjects();
   const filters = sanitizeFilters(input);
   const filteredProjects = sortProjects(projects.filter((project) => matchesFilters(project, filters)), filters.sort);
   const visibleProjects = filteredProjects.slice(0, 120);
@@ -1366,6 +1427,7 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
   return {
     filters,
     summary: summarize(filteredProjects),
+    marketPulse,
     featured: enrichedProjects.slice(0, 5),
     projects: enrichedProjects,
     activeContacts: buildActiveContacts(filteredProjects),
@@ -1389,7 +1451,7 @@ export async function getProjectById(id: string, trade = ''): Promise<PermitProj
 }
 
 export async function getProjectsByContact(name: string, filters?: Partial<DashboardFilters>, trade = ''): Promise<DashboardPayload & { contactName: string }> {
-  const { projects: allProjects, fetchedAt } = await loadProjects();
+  const { projects: allProjects, marketPulse, fetchedAt } = await loadProjects();
   const nextFilters = sanitizeFilters(filters);
   const projects = allProjects.filter(
     (project) => project.contactName.toLowerCase() === name.toLowerCase() && matchesFilters(project, nextFilters)
@@ -1406,6 +1468,7 @@ export async function getProjectsByContact(name: string, filters?: Partial<Dashb
     filters: nextFilters,
     contactName: name,
     summary: summarize(sorted),
+    marketPulse,
     featured: enrichedProjects.slice(0, 5),
     projects: enrichedProjects,
     activeContacts: buildActiveContacts(sorted),
