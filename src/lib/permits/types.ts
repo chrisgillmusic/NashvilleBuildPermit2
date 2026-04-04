@@ -1,5 +1,16 @@
 export type InterpretationSource = 'ai' | 'fallback';
 
+export type ApplicableTrade = {
+  trade: string;
+  confidence: string;
+  reason: string;
+};
+
+export type OutreachDraft = {
+  subject: string;
+  body: string;
+};
+
 export type PermitProject = {
   id: string;
   objectId: number;
@@ -24,6 +35,8 @@ export type PermitProject = {
   mapsUrl: string;
   whyItMatters: string;
   likelyTrades: string[];
+  applicableTrades?: ApplicableTrade[];
+  outreachByTrade?: Record<string, OutreachDraft>;
   isTradeRelevant: boolean | null;
   summarySource: InterpretationSource;
   tradeSource: InterpretationSource;
@@ -65,6 +78,8 @@ export type ActiveContact = {
   mostRecentPermitSummary?: string;
   mostRecentPermitType?: string;
   mostRecentProjectId?: string;
+  mostRecentApplicableTrades?: ApplicableTrade[];
+  mostRecentOutreachByTrade?: Record<string, OutreachDraft>;
   phone: string | null;
   email: string | null;
 };

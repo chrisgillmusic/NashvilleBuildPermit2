@@ -22,6 +22,21 @@ function normalizeTradeValue(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function tradeCandidates(trade: string): string[] {
+  const normalized = normalizeTradeValue(trade);
+  const candidates = new Set<string>([normalized]);
+
+  if (normalized === 'hvac') candidates.add('mechanical');
+  if (normalized === 'mechanical') candidates.add('hvac');
+  if (normalized === 'general interiors') candidates.add('general construction');
+  if (normalized === 'general construction') candidates.add('general interiors');
+  if (normalized === 'framing') candidates.add('general construction');
+  if (normalized === 'concrete') candidates.add('sitework');
+  if (normalized === 'sitework') candidates.add('concrete');
+
+  return [...candidates];
+}
+
 function normalizeSearchText(value: string): string {
   return value
     .trim()
@@ -128,6 +143,19 @@ export function projectMatchesTrade(project: PermitProject, trade: string): bool
   if (!trade) return true;
   if (project.tradeSource === 'ai' && project.isTradeRelevant !== null) return project.isTradeRelevant;
   const normalized = normalizeTradeValue(trade);
+  const candidates = tradeCandidates(trade);
+
+  if (project.applicableTrades?.length) {
+    return project.applicableTrades.some((applicableTrade) => {
+      const normalizedApplicableTrade = normalizeTradeValue(applicableTrade.trade);
+      return candidates.some(
+        (candidate) =>
+          normalizedApplicableTrade === candidate ||
+          normalizedApplicableTrade.includes(candidate) ||
+          candidate.includes(normalizedApplicableTrade)
+      );
+    });
+  }
 
   if (normalized === 'roofing') {
     if (hasNegativeRoofSignal(project) && !hasPositiveRoofSignal(project)) return false;

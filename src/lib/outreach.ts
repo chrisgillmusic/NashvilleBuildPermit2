@@ -1,4 +1,4 @@
-import type { ActiveContact, PermitProject } from '@/lib/permits/types';
+import type { ActiveContact, OutreachDraft, PermitProject } from '@/lib/permits/types';
 
 export type OutreachProfile = {
   fullName?: string;
@@ -78,6 +78,67 @@ function buildMailto(email: string, subject: string, body: string): string {
   return `mailto:${email}?subject=${encodeMailtoPart(subject)}&body=${encodeMailtoPart(body)}`;
 }
 
+function normalizeTradeKey(value: string): string {
+  return clean(value).toLowerCase();
+}
+
+function tradeKeyCandidates(value: string): string[] {
+  const normalized = normalizeTradeKey(value);
+  const candidates = new Set<string>([normalized]);
+
+  if (normalized === 'hvac') candidates.add('mechanical');
+  if (normalized === 'mechanical') candidates.add('hvac');
+  if (normalized === 'general interiors') candidates.add('general construction');
+  if (normalized === 'general construction') candidates.add('general interiors');
+  if (normalized === 'framing') candidates.add('general construction');
+  if (normalized === 'concrete') candidates.add('sitework');
+  if (normalized === 'sitework') candidates.add('concrete');
+
+  return [...candidates];
+}
+
+function findStoredOutreachDraft(outreachByTrade: Record<string, OutreachDraft> | undefined, trade: string): OutreachDraft | null {
+  if (!outreachByTrade || !trade.trim()) return null;
+
+  const candidates = tradeKeyCandidates(trade);
+  for (const [key, draft] of Object.entries(outreachByTrade)) {
+    const normalizedKey = normalizeTradeKey(key);
+    if (!normalizedKey) continue;
+    if (candidates.some((candidate) => normalizedKey === candidate || normalizedKey.includes(candidate) || candidate.includes(normalizedKey))) {
+      return draft;
+    }
+  }
+
+  return null;
+}
+
+function hydrateStoredDraft(draft: OutreachDraft, profile: OutreachProfile, recipientName: string, companyName: string): OutreachDraft {
+  const replacements: Record<string, string> = {
+    '[Name]': firstName(recipientName) || recipientName || 'there',
+    '[Company]': clean(companyName) || clean(recipientName) || 'your team',
+    '[Business Name]': clean(profile.businessName) || 'My company',
+    '[Sender Full Name]': clean(profile.fullName) || '',
+    '[Phone]': clean(profile.phone) || '',
+    '[Email]': clean(profile.email) || ''
+  };
+
+  const replaceTokens = (value: string) => {
+    let next = value;
+    for (const [token, replacement] of Object.entries(replacements)) {
+      next = next.replaceAll(token, replacement);
+    }
+    return next
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  };
+
+  return {
+    subject: replaceTokens(draft.subject || ''),
+    body: replaceTokens(draft.body || '')
+  };
+}
+
 function selectTemplate(index: number): OutreachTemplate {
   return OUTREACH_TEMPLATES[((index % OUTREACH_TEMPLATES.length) + OUTREACH_TEMPLATES.length) % OUTREACH_TEMPLATES.length];
 }
@@ -95,9 +156,15 @@ function buildScopeLine(scope: string): string {
   return `The scope looks like ${sentence}.`;
 }
 
-export function buildProjectOutreachMailto(project: PermitProject, profile: OutreachProfile, templateIndex = 0): string | null {
+export function buildProjectOutreachMailto(project: PermitProject, profile: OutreachProfile, templateIndex = 0, selectedTrade = ''): string | null {
   const email = clean(project.contactEmail);
   if (!email) return null;
+
+  const storedDraft = findStoredOutreachDraft(project.outreachByTrade, selectedTrade);
+  if (storedDraft) {
+    const hydrated = hydrateStoredDraft(storedDraft, profile, project.contactName, project.contactName);
+    return buildMailto(email, hydrated.subject || `${clean(profile.trade) || 'Trade support'} for ${project.address}`, hydrated.body);
+  }
 
   const template = selectTemplate(templateIndex);
   const greetingName = firstName(project.contactName) || 'there';
@@ -121,6 +188,13 @@ export function buildProjectOutreachMailto(project: PermitProject, profile: Outr
 export function buildContactOutreachMailto(contact: ActiveContact, profile: OutreachProfile, templateIndex = 0): string | null {
   const email = clean(contact.email);
   if (!email) return null;
+
+  const storedDraft = findStoredOutreachDraft(contact.mostRecentOutreachByTrade, clean(profile.trade));
+  if (storedDraft) {
+    const hydrated = hydrateStoredDraft(storedDraft, profile, contact.name, contact.name);
+    const subject = hydrated.subject || `${clean(profile.trade) || 'Trade support'} for ${clean(contact.mostRecentPermitAddress) || 'your Jacksonville permit work'}`;
+    return buildMailto(email, subject, hydrated.body);
+  }
 
   const template = selectTemplate(templateIndex);
   const greetingName = firstName(contact.name) || 'there';

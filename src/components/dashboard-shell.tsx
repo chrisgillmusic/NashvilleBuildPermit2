@@ -95,6 +95,8 @@ function aggregateContacts(projects: PermitProject[]): ActiveContact[] {
         mostRecentPermitSummary: project.readableSummary,
         mostRecentPermitType: project.permitSubtype || project.permitType,
         mostRecentProjectId: project.id,
+        mostRecentApplicableTrades: project.applicableTrades,
+        mostRecentOutreachByTrade: project.outreachByTrade,
         phone: project.contactPhone,
         email: project.contactEmail
       });
@@ -109,6 +111,8 @@ function aggregateContacts(projects: PermitProject[]): ActiveContact[] {
       existing.mostRecentPermitSummary = project.readableSummary;
       existing.mostRecentPermitType = project.permitSubtype || project.permitType;
       existing.mostRecentProjectId = project.id;
+      existing.mostRecentApplicableTrades = project.applicableTrades;
+      existing.mostRecentOutreachByTrade = project.outreachByTrade;
     }
     if (!existing.phone && project.contactPhone) existing.phone = project.contactPhone;
     if (!existing.email && project.contactEmail) existing.email = project.contactEmail;
@@ -996,7 +1000,7 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
                           <PermitFeedCard
                             project={project}
                             trade={profile.trade}
-                            emailHref={buildProjectOutreachMailto(project, outreachProfileFor(profile), outreachTemplateIndex)}
+                            emailHref={buildProjectOutreachMailto(project, outreachProfileFor(profile), outreachTemplateIndex, profile.trade)}
                             onEmailClick={advanceOutreachTemplate}
                             expanded={expandedJobId === project.id}
                             onToggle={() => setExpandedJobId((current) => (current === project.id ? null : project.id))}

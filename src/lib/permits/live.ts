@@ -21,7 +21,7 @@ import {
   type TruthStageResult
 } from './ai';
 import { JACKSONVILLE_SNAPSHOT, type JacksonvilleSnapshotRecord } from './jacksonville-snapshot';
-import type { ActiveContact, DashboardFilters, DashboardPayload, PermitProject, SummaryStats } from './types';
+import type { ActiveContact, ApplicableTrade, DashboardFilters, DashboardPayload, OutreachDraft, PermitProject, SummaryStats } from './types';
 
 const JAX_API_BASE =
   process.env.JAX_PERMITS_API_URL ||
@@ -36,6 +36,7 @@ const CONTENT_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || 'Version 13 • S
 const JAX_SEARCH_TERMS = ['MAIN', 'ATLANTIC', 'BEACH', 'PHILIPS', 'SAN JOSE', 'BAYMEADOWS', 'UNIVERSITY', 'BLANDING', 'DUNN', 'ROOSEVELT'];
 const JAX_SEARCH_PAGE_SIZE = 20;
 const JAX_MAX_SOURCE_PROJECTS = 45;
+const JACKSONVILLE_MERGED_PATH = path.join(process.cwd(), 'src/data/jacksonville-merged.json');
 const JACKSONVILLE_JSON_PATH = path.join(process.cwd(), 'src/data/jacksonville-permits.json');
 
 type JacksonvilleSearchItem = {
@@ -114,6 +115,38 @@ type JacksonvilleJsonRecord = {
   raw?: Record<string, unknown>;
 };
 
+type JacksonvilleMergedApplicableTrade = {
+  trade?: string;
+  confidence?: string;
+  reason?: string;
+};
+
+type JacksonvilleMergedContent = {
+  readableSummary?: string;
+  tradeSummary?: string;
+  whyItMatters?: string;
+  applicableTrades?: JacksonvilleMergedApplicableTrade[];
+  outreachByTrade?: Record<string, { subject?: string; body?: string }>;
+  normalizedTitle?: string;
+};
+
+type JacksonvilleMergedRecord = {
+  datasetKey?: string;
+  permitId?: string;
+  rawPermit?: JacksonvilleJsonRecord;
+  normalizedPermit?: Partial<JacksonvilleJsonRecord> & {
+    permitId?: string;
+    permitType?: string;
+    likelyTrades?: string[];
+    normalizedTitle?: string;
+  };
+  generatedContent?: JacksonvilleMergedContent;
+  contentState?: {
+    status?: string;
+    contentVersion?: string;
+  };
+};
+
 type CacheValue = {
   projects: PermitProject[];
   fetchedAt: number;
@@ -137,6 +170,17 @@ async function readJacksonvilleJsonRecords(): Promise<JacksonvilleJsonRecord[] |
     const raw = await readFile(JACKSONVILLE_JSON_PATH, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
     return Array.isArray(parsed) ? (parsed as JacksonvilleJsonRecord[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readJacksonvilleMergedRecords(): Promise<JacksonvilleMergedRecord[] | null> {
+  try {
+    await access(JACKSONVILLE_MERGED_PATH);
+    const raw = await readFile(JACKSONVILLE_MERGED_PATH, 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as JacksonvilleMergedRecord[]) : null;
   } catch {
     return null;
   }
@@ -266,6 +310,67 @@ function buildMapsUrl(address: string, city: string, state: string, zip: string)
 
 function dedupeTrades(trades: string[]): string[] {
   return Array.from(new Set(trades));
+}
+
+function normalizeComparableTrade(value: string): string {
+  return getText(value).trim().toLowerCase();
+}
+
+function comparableTradeCandidates(value: string): string[] {
+  const normalized = normalizeComparableTrade(value);
+  const candidates = new Set<string>([normalized]);
+
+  if (normalized === 'hvac') candidates.add('mechanical');
+  if (normalized === 'mechanical') candidates.add('hvac');
+  if (normalized === 'general interiors') candidates.add('general construction');
+  if (normalized === 'general construction') candidates.add('general interiors');
+  if (normalized === 'framing') candidates.add('general construction');
+  if (normalized === 'concrete') candidates.add('sitework');
+  if (normalized === 'sitework') candidates.add('concrete');
+
+  return [...candidates];
+}
+
+function normalizeApplicableTrades(trades: JacksonvilleMergedApplicableTrade[] | undefined, fallbackTrades: string[]): ApplicableTrade[] {
+  const seen = new Set<string>();
+  const normalized = (trades || [])
+    .map((trade) => ({
+      trade: getText(trade.trade),
+      confidence: getText(trade.confidence) || 'unknown',
+      reason: getText(trade.reason)
+    }))
+    .filter((trade) => {
+      const key = normalizeComparableTrade(trade.trade);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+  if (normalized.length) return normalized;
+
+  return dedupeTrades(fallbackTrades)
+    .map((trade) => ({
+      trade,
+      confidence: 'fallback',
+      reason: ''
+    }))
+    .filter((trade) => trade.trade);
+}
+
+function normalizeOutreachByTrade(outreachByTrade: JacksonvilleMergedContent['outreachByTrade']): Record<string, OutreachDraft> | undefined {
+  if (!outreachByTrade) return undefined;
+
+  const entries = Object.entries(outreachByTrade)
+    .map(([trade, draft]) => [
+      trade,
+      {
+        subject: getText(draft?.subject),
+        body: getText(draft?.body)
+      }
+    ] as const)
+    .filter(([, draft]) => draft.subject || draft.body);
+
+  return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
 function toSentenceCase(value: string): string {
@@ -671,6 +776,94 @@ function projectFromJsonRecord(record: JacksonvilleJsonRecord): PermitProject | 
   };
 }
 
+function projectFromMergedRecord(record: JacksonvilleMergedRecord): PermitProject | null {
+  const normalized = record.normalizedPermit || {};
+  const raw = record.rawPermit || {};
+  const permitId = getText(normalized.permitId || raw.id || record.permitId);
+  const issueDate = parseIssueDate(normalized.dateIssued || raw.dateIssued);
+  if (!permitId || !issueDate) return null;
+
+  const permitTypeText = getText(normalized.permitType || raw.type);
+  const permitType = inferPermitType(permitTypeText);
+  const permitSubtype = inferPermitSubtype(permitTypeText);
+  const rawPurpose = getText(normalized.description || raw.description);
+  const purpose = cleanPurposeText(rawPurpose) || rawPurpose;
+  const fallbackNotes = deriveNotes(permitType, permitSubtype, purpose);
+  const generated = record.generatedContent || {};
+  const contentStatus = getText(record.contentState?.status).toLowerCase();
+  const summaryReady = contentStatus === 'ready' && getText(generated.readableSummary).length > 0;
+  const applicableTrades = normalizeApplicableTrades(generated.applicableTrades, normalized.likelyTrades || fallbackNotes.likelyTrades);
+  const outreachByTrade = normalizeOutreachByTrade(generated.outreachByTrade);
+  const address = toAddressCase(getText(normalized.address || raw.address));
+  const city = getText(normalized.city || raw.city) || 'Jacksonville';
+  const state = 'FL';
+  const zip = inferZipFromJson(raw);
+  const neighborhood = inferNeighborhoodFromJson(raw);
+  const valuation = getNumeric(normalized.value ?? raw.value) ?? 0;
+  const coordinates = inferCoordinatesFromJson(raw);
+  const permitNumber = getText(normalized.permitNumber || raw.permitNumber) || `JAX-${permitId}`;
+  const readableSummary = getText(generated.readableSummary) || buildReadableSummary(permitSubtype || permitType, purpose);
+  const tradeSummary = getText(generated.tradeSummary);
+  const whyItMatters = getText(generated.whyItMatters) || fallbackNotes.whyItMatters;
+  const likelyTrades = dedupeTrades(applicableTrades.map((trade) => trade.trade).filter(Boolean).concat(normalized.likelyTrades || fallbackNotes.likelyTrades));
+
+  return {
+    id: permitId,
+    objectId: Number(permitId),
+    permitNumber,
+    permitType,
+    permitSubtype,
+    address,
+    city,
+    state,
+    zip,
+    neighborhood,
+    contactName: getText(raw.contact) || 'Contact not listed',
+    contactPhone: getText(raw.phone) || null,
+    contactEmail: getText(raw.email) || null,
+    rawPurpose,
+    purpose,
+    readableSummary,
+    tradeSummary,
+    valuation,
+    issueDate: issueDate.toISOString(),
+    issueDateLabel: format(issueDate, 'MMM d, yyyy'),
+    mapsUrl: buildMapsUrl(address, city, state, zip),
+    whyItMatters,
+    likelyTrades,
+    applicableTrades,
+    outreachByTrade,
+    isTradeRelevant: null,
+    summarySource: summaryReady ? 'ai' : 'fallback',
+    tradeSource: applicableTrades.length || tradeSummary ? 'ai' : 'fallback',
+    needsSummary: !summaryReady,
+    needsTradeNote: false,
+    needsSummaryRefresh: false,
+    needsTradeNoteRefresh: false,
+    coordinates,
+    rawFields: {
+      'Permit #': permitNumber,
+      'Permit type': permitType || 'N/A',
+      'Permit subtype': permitSubtype || 'N/A',
+      Address: address || 'N/A',
+      City: city || 'N/A',
+      State: state,
+      ZIP: zip || 'N/A',
+      Neighborhood: neighborhood || 'N/A',
+      Contact: getText(raw.contact) || 'N/A',
+      'Contact phone': getText(raw.phone) || 'N/A',
+      'Contact email': getText(raw.email) || 'N/A',
+      Purpose: purpose || 'N/A',
+      'Estimated valuation': valuation
+        ? valuation.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+        : 'N/A',
+      'Issue date': format(issueDate, 'MMM d, yyyy'),
+      'Content status': getText(record.contentState?.status) || 'N/A',
+      'Content version': getText(record.contentState?.contentVersion) || 'N/A'
+    }
+  };
+}
+
 function toProject(detail: JacksonvillePermitDetail, result: JacksonvilleSearchItem): PermitProject | null {
   const issueDate = parseIssueDate(detail.DateIssued || result.obj?.DateIssued);
   if (!issueDate) return null;
@@ -764,6 +957,32 @@ function textsOverlap(left: string, right: string): boolean {
   const b = right.toLowerCase().replace(/[^\w]+/g, ' ').trim();
   if (!a || !b) return false;
   return a === b || a.includes(b) || b.includes(a);
+}
+
+function findApplicableTrade(project: PermitProject, trade: string): ApplicableTrade | null {
+  if (!trade.trim() || !project.applicableTrades?.length) return null;
+
+  const candidates = comparableTradeCandidates(trade);
+  for (const applicableTrade of project.applicableTrades) {
+    const normalizedApplicable = normalizeComparableTrade(applicableTrade.trade);
+    if (!normalizedApplicable) continue;
+    if (
+      candidates.some(
+        (candidate) =>
+          normalizedApplicable === candidate ||
+          normalizedApplicable.includes(candidate) ||
+          candidate.includes(normalizedApplicable)
+      )
+    ) {
+      return applicableTrade;
+    }
+  }
+
+  return null;
+}
+
+function hasEmbeddedGeneratedContent(project: PermitProject): boolean {
+  return Boolean(project.summarySource === 'ai' || project.applicableTrades?.length || project.outreachByTrade);
 }
 
 function fallbackTradeDecision(project: PermitProject, trade: string): { isTradeRelevant: boolean | null; tradeReason: string } {
@@ -861,7 +1080,44 @@ function applyNarrative(
   return enrichedProject;
 }
 
+function applyEmbeddedNarrative(project: PermitProject, trade: string): PermitProject {
+  const fallbackTrade = fallbackTradeDecision(project, trade);
+  const applicableTrade = findApplicableTrade(project, trade);
+  const summary = project.readableSummary;
+  const tradeReasonFromContent = getText(applicableTrade?.reason || project.tradeSummary);
+  const tradeSummary =
+    tradeReasonFromContent && !textsOverlap(tradeReasonFromContent, summary) && !textsOverlap(tradeReasonFromContent, project.whyItMatters)
+      ? tradeReasonFromContent
+      : fallbackTrade.tradeReason;
+  const isTradeRelevant = trade
+    ? project.applicableTrades?.length
+      ? Boolean(applicableTrade)
+      : fallbackTrade.isTradeRelevant
+    : null;
+
+  const enrichedProject: PermitProject = {
+    ...project,
+    tradeSummary,
+    isTradeRelevant,
+    summarySource: project.summarySource,
+    tradeSource: trade ? (project.applicableTrades?.length || project.tradeSummary ? 'ai' : 'fallback') : project.tradeSource,
+    needsSummary: project.summarySource !== 'ai',
+    needsTradeNote: false,
+    needsSummaryRefresh: false,
+    needsTradeNoteRefresh: false
+  };
+  console.log(`FINAL SUMMARY SOURCE: ${enrichedProject.summarySource}`);
+  console.log(`FINAL TRADE SOURCE: ${enrichedProject.tradeSource}`);
+  console.log('FINAL SUMMARY:', enrichedProject.readableSummary);
+  console.log('FINAL TRADE DECISION:', enrichedProject.isTradeRelevant ? 'relevant' : 'not relevant');
+  return enrichedProject;
+}
+
 async function enrichProjectNarrative(project: PermitProject, trade: string): Promise<PermitProject> {
+  if (hasEmbeddedGeneratedContent(project)) {
+    return applyEmbeddedNarrative(project, trade);
+  }
+
   const storedSummary = await getStoredBaseSummary(buildBaseSummaryInput(project));
   const summary = storedSummary.summary?.summary || null;
   const storedTrade = trade ? await getStoredTradeNote(buildTradeNoteInput(project, trade, summary || project.readableSummary)) : null;
@@ -872,9 +1128,16 @@ async function enrichProjectNarrative(project: PermitProject, trade: string): Pr
 async function enrichProjects(projects: PermitProject[], trade = ''): Promise<PermitProject[]> {
   if (!projects.length) return [];
 
-  const summaryLookups = await getStoredBaseSummaries(projects.map((project) => buildBaseSummaryInput(project)));
+  const embeddedIds = new Set(projects.filter(hasEmbeddedGeneratedContent).map((project) => project.id));
+  const fallbackProjects = projects.filter((project) => !embeddedIds.has(project.id));
+
+  if (!fallbackProjects.length) {
+    return projects.map((project) => applyEmbeddedNarrative(project, trade));
+  }
+
+  const summaryLookups = await getStoredBaseSummaries(fallbackProjects.map((project) => buildBaseSummaryInput(project)));
   const tradeInputs = trade
-    ? projects.map((project) => {
+    ? fallbackProjects.map((project) => {
         const summary = summaryLookups.get(project.id)?.summary?.summary || project.readableSummary;
         return buildTradeNoteInput(project, trade, summary);
       })
@@ -882,6 +1145,9 @@ async function enrichProjects(projects: PermitProject[], trade = ''): Promise<Pe
   const tradeLookups = trade ? await getStoredTradeNotes(tradeInputs) : new Map();
 
   return projects.map((project) => {
+    if (embeddedIds.has(project.id)) {
+      return applyEmbeddedNarrative(project, trade);
+    }
     const summary = summaryLookups.get(project.id)?.summary || null;
     const tradeNote = trade ? tradeLookups.get(project.id)?.tradeNote || null : null;
     return applyNarrative(project, trade, summary, tradeNote);
@@ -896,8 +1162,11 @@ async function loadProjects(): Promise<CacheValue> {
   if (inflight) return inflight;
 
   inflight = (async () => {
+    const mergedRecords = await readJacksonvilleMergedRecords();
     const jsonRecords = await readJacksonvilleJsonRecords();
-    const projects = (jsonRecords?.length
+    const projects = (mergedRecords?.length
+      ? mergedRecords.map(projectFromMergedRecord).filter((project): project is PermitProject => Boolean(project))
+      : jsonRecords?.length
       ? jsonRecords.map(projectFromJsonRecord).filter((project): project is PermitProject => Boolean(project))
       : JACKSONVILLE_SNAPSHOT.map(projectFromSnapshot))
       .sort((left, right) => {
@@ -1023,6 +1292,8 @@ function buildActiveContacts(projects: PermitProject[]): ActiveContact[] {
         mostRecentPermitSummary: project.readableSummary,
         mostRecentPermitType: project.permitSubtype || project.permitType,
         mostRecentProjectId: project.id,
+        mostRecentApplicableTrades: project.applicableTrades,
+        mostRecentOutreachByTrade: project.outreachByTrade,
         phone: project.contactPhone,
         email: project.contactEmail
       });
@@ -1037,6 +1308,8 @@ function buildActiveContacts(projects: PermitProject[]): ActiveContact[] {
       existing.mostRecentPermitSummary = project.readableSummary;
       existing.mostRecentPermitType = project.permitSubtype || project.permitType;
       existing.mostRecentProjectId = project.id;
+      existing.mostRecentApplicableTrades = project.applicableTrades;
+      existing.mostRecentOutreachByTrade = project.outreachByTrade;
     }
     if (!existing.phone && project.contactPhone) existing.phone = project.contactPhone;
     if (!existing.email && project.contactEmail) existing.email = project.contactEmail;
