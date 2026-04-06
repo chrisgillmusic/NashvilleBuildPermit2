@@ -21,6 +21,7 @@ import {
   type TruthStageResult
 } from './ai';
 import { JACKSONVILLE_SNAPSHOT, type JacksonvilleSnapshotRecord } from './jacksonville-snapshot';
+import { projectMatchesTrade } from './trade-utils';
 import type { ActiveContact, ApplicableTrade, DashboardFilters, DashboardPayload, MarketPulse, OutreachDraft, PermitProject, SummaryStats } from './types';
 
 const JAX_API_BASE =
@@ -1260,9 +1261,9 @@ async function loadProjects(): Promise<CacheValue> {
 export function getDefaultFilters(): DashboardFilters {
   const today = new Date();
   return {
-    minBudget: 50000,
+    minBudget: 0,
     maxBudget: 25000000,
-    dateFrom: format(subDays(today, 365), 'yyyy-MM-dd'),
+    dateFrom: format(subDays(today, 90), 'yyyy-MM-dd'),
     dateTo: format(today, 'yyyy-MM-dd'),
     permitType: '',
     neighborhood: '',
@@ -1434,10 +1435,20 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
   const needsTradeNoteCount = enrichedProjects.filter((project) => project.needsTradeNote).length;
   const needsRefreshCount = enrichedProjects.filter((project) => project.needsSummaryRefresh || project.needsTradeNoteRefresh).length;
   const featuredProjects = enrichedProjects.slice(0, 5);
+  const withinDisplayWindowProjects = projects.filter((project) => {
+    const issued = parseISO(project.issueDate);
+    if (!isValid(issued)) return false;
+    const ageInDays = differenceInCalendarDays(new Date(), issued);
+    return ageInDays >= 0 && ageInDays <= 90;
+  });
+  const tradeMatchedProjects = trade ? withinDisplayWindowProjects.filter((project) => projectMatchesTrade(project, trade)) : withinDisplayWindowProjects;
 
   console.log('BIDHAMMER JOBS DIAGNOSTICS', {
     totalPermitsLoaded: projects.length,
+    totalPermitsWithinThreeMonthWindow: withinDisplayWindowProjects.length,
+    totalPermitsMatchingSelectedTrade: tradeMatchedProjects.length,
     totalPermitsAfterTopLevelFilter: filteredProjects.length,
+    selectedTrade: trade || null,
     featuredPermitId: featuredProjects[0]?.id || null,
     permitsRemainingAfterFeaturedExclusion: Math.max(enrichedProjects.length - featuredProjects.length, 0),
     jobsInProgressCount: enrichedProjects.filter((project) => {
@@ -1446,7 +1457,8 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
     }).length,
     earlierJobsCount: enrichedProjects.filter((project) => {
       const issued = parseISO(project.issueDate);
-      return isValid(issued) && differenceInCalendarDays(new Date(), issued) > 30;
+      const ageInDays = isValid(issued) ? differenceInCalendarDays(new Date(), issued) : -1;
+      return ageInDays > 30 && ageInDays <= 90;
     }).length,
     sampleResolvedDates: enrichedProjects.slice(0, 5).map((project) => ({
       id: project.id,

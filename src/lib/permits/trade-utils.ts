@@ -10,9 +10,7 @@ export const TRADE_OPTIONS = [
   'Concrete',
   'Framing',
   'Fire Protection',
-  'Paint',
-  'Storefront',
-  'General Interiors'
+  'Paint'
 ] as const;
 
 export type TradeOption = (typeof TRADE_OPTIONS)[number];

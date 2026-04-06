@@ -154,18 +154,20 @@ function isProfileComplete(profile: UserProfile): boolean {
   return [profile.email, profile.fullName, profile.businessName, profile.phone, profile.trade].every((value) => value.trim().length > 0);
 }
 
+function resolveProjectAgeInDays(project: PermitProject): number | null {
+  const issued = parseISO(project.issueDate);
+  if (!isValid(issued)) return null;
+  return differenceInCalendarDays(new Date(), issued);
+}
+
 function projectsForTimeframe(projects: PermitProject[], timeframe: TimeframeKey): PermitProject[] {
-  const now = new Date();
-
   return projects.filter((project) => {
-    const issued = parseISO(project.issueDate);
-    if (!isValid(issued)) return false;
-
-    const ageInDays = differenceInCalendarDays(now, issued);
+    const ageInDays = resolveProjectAgeInDays(project);
+    if (ageInDays === null) return false;
 
     if (timeframe === 'new') return ageInDays >= 0 && ageInDays <= 7;
     if (timeframe === 'active') return ageInDays > 7 && ageInDays <= 30;
-    return ageInDays > 30;
+    return ageInDays > 30 && ageInDays <= 90;
   });
 }
 
@@ -237,19 +239,17 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
 
     if (storedProfile) {
       const parsed = JSON.parse(storedProfile) as Partial<UserProfile> & { username?: string };
+      const normalizedTrade = TRADE_OPTIONS.includes((parsed.trade || '') as (typeof TRADE_OPTIONS)[number]) ? parsed.trade || '' : '';
       const merged = {
         ...mergedProfile,
         ...parsed,
         fullName: parsed.fullName || parsed.username || '',
+        trade: normalizedTrade,
+        budgetMin: mergedProfile.budgetMin,
         budgetMax: mergedProfile.budgetMax
       };
       mergedProfile = merged;
       setProfile(merged);
-      setFilters((current) => ({
-        ...current,
-        minBudget: merged.budgetMin ?? current.minBudget,
-        maxBudget: merged.budgetMax ?? current.maxBudget
-      }));
       setProfileSaveState(isProfileComplete(merged) ? 'saved' : 'idle');
     }
 
@@ -333,13 +333,13 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
 
   useEffect(() => {
     const sampleDates = visibleProjects.slice(0, 8).map((project) => {
-      const issued = parseISO(project.issueDate);
+      const ageInDays = resolveProjectAgeInDays(project);
       return {
         id: project.id,
         issueDate: project.issueDate,
         resolvedTrade: project.applicableTrades?.[0]?.trade || '',
-        parsed: isValid(issued) ? issued.toISOString() : 'invalid',
-        ageInDays: isValid(issued) ? differenceInCalendarDays(new Date(), issued) : null
+        parsed: ageInDays === null ? 'invalid' : parseISO(project.issueDate).toISOString(),
+        ageInDays
       };
     });
 
@@ -356,8 +356,13 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
     console.log('BIDHAMMER JOBS SECTION DIAGNOSTICS', {
       totalPermitsLoadedIntoJobsScreen: payload.projects.length,
       permitsAfterNormalization: payload.projects.length,
+      totalPermitsWithinThreeMonthWindow: payload.projects.filter((project) => {
+        const ageInDays = resolveProjectAgeInDays(project);
+        return ageInDays !== null && ageInDays >= 0 && ageInDays <= 90;
+      }).length,
       permitsAfterTradeFiltering: tradeFilteredProjects.length,
       permitsWithValidResolvedDates: projectsWithValidResolvedDates.length,
+      permitsAfterAllRemainingFilters: visibleProjects.length,
       selectedTrade: profile.trade || null,
       selectedFeedMode: profile.defaultFeedMode,
       dropStep,
@@ -366,7 +371,7 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
       topJobsCount: topJobs.length,
       jobsInProgressCount: jobsInProgress.length,
       earlierJobsCount: earlierJobs.length,
-      invalidDatePermitIds: visibleProjects.filter((project) => !isValid(parseISO(project.issueDate))).map((project) => project.id).slice(0, 20),
+      invalidDatePermitIds: visibleProjects.filter((project) => resolveProjectAgeInDays(project) === null).map((project) => project.id).slice(0, 20),
       sampleResolvedDates: sampleDates
     });
   }, [feedSections, payload.featured, payload.projects, profile.defaultFeedMode, profile.trade, projectsWithValidResolvedDates.length, tradeFilteredProjects.length, visibleProjects]);
