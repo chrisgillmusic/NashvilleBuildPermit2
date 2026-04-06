@@ -324,6 +324,29 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
     [visibleProjects]
   );
 
+  useEffect(() => {
+    const sampleDates = visibleProjects.slice(0, 8).map((project) => {
+      const issued = parseISO(project.issueDate);
+      return {
+        id: project.id,
+        issueDate: project.issueDate,
+        parsed: isValid(issued) ? issued.toISOString() : 'invalid',
+        ageInDays: isValid(issued) ? differenceInCalendarDays(new Date(), issued) : null
+      };
+    });
+
+    console.log('BIDHAMMER JOBS SECTION DIAGNOSTICS', {
+      totalVisibleProjects: visibleProjects.length,
+      featuredPermitId: payload.featured[0]?.id || null,
+      permitsRemainingAfterFeaturedExclusion: Math.max(visibleProjects.length - payload.featured.length, 0),
+      topJobsCount: feedSections.find((section) => section.key === 'new')?.projects.length || 0,
+      jobsInProgressCount: feedSections.find((section) => section.key === 'active')?.projects.length || 0,
+      earlierJobsCount: feedSections.find((section) => section.key === 'older')?.projects.length || 0,
+      invalidDatePermitIds: visibleProjects.filter((project) => !isValid(parseISO(project.issueDate))).map((project) => project.id).slice(0, 20),
+      sampleResolvedDates: sampleDates
+    });
+  }, [feedSections, payload.featured, visibleProjects]);
+
   const contractors = useMemo(() => aggregateContacts(visibleProjects), [visibleProjects]);
   const filteredContractors = useMemo(() => {
     const query = contractorQuery.trim().toLowerCase();

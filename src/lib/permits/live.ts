@@ -158,6 +158,7 @@ type JacksonvilleMergedDataset = {
   datasetMeta?: {
     marketPulse?: JacksonvilleMergedMarketPulse;
   };
+  permits?: JacksonvilleMergedRecord[];
   records?: JacksonvilleMergedRecord[];
   items?: JacksonvilleMergedRecord[];
 };
@@ -185,7 +186,14 @@ async function readJacksonvilleJsonRecords(): Promise<JacksonvilleJsonRecord[] |
     await access(JACKSONVILLE_JSON_PATH);
     const raw = await readFile(JACKSONVILLE_JSON_PATH, 'utf8');
     const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as JacksonvilleJsonRecord[]) : null;
+    if (Array.isArray(parsed)) return parsed as JacksonvilleJsonRecord[];
+    if (parsed && typeof parsed === 'object') {
+      const wrapped = parsed as { permits?: JacksonvilleJsonRecord[]; records?: JacksonvilleJsonRecord[]; items?: JacksonvilleJsonRecord[] };
+      if (Array.isArray(wrapped.permits)) return wrapped.permits;
+      if (Array.isArray(wrapped.records)) return wrapped.records;
+      if (Array.isArray(wrapped.items)) return wrapped.items;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -205,7 +213,9 @@ async function readJacksonvilleMergedRecords(): Promise<{ records: JacksonvilleM
 
     if (parsed && typeof parsed === 'object') {
       const dataset = parsed as JacksonvilleMergedDataset;
-      const records = Array.isArray(dataset.records)
+      const records = Array.isArray(dataset.permits)
+        ? dataset.permits
+        : Array.isArray(dataset.records)
         ? dataset.records
         : Array.isArray(dataset.items)
         ? dataset.items
@@ -1423,12 +1433,34 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
   const needsSummaryCount = enrichedProjects.filter((project) => project.needsSummary).length;
   const needsTradeNoteCount = enrichedProjects.filter((project) => project.needsTradeNote).length;
   const needsRefreshCount = enrichedProjects.filter((project) => project.needsSummaryRefresh || project.needsTradeNoteRefresh).length;
+  const featuredProjects = enrichedProjects.slice(0, 5);
+
+  console.log('BIDHAMMER JOBS DIAGNOSTICS', {
+    totalPermitsLoaded: projects.length,
+    totalPermitsAfterTopLevelFilter: filteredProjects.length,
+    featuredPermitId: featuredProjects[0]?.id || null,
+    permitsRemainingAfterFeaturedExclusion: Math.max(enrichedProjects.length - featuredProjects.length, 0),
+    jobsInProgressCount: enrichedProjects.filter((project) => {
+      const issued = parseISO(project.issueDate);
+      return isValid(issued) && differenceInCalendarDays(new Date(), issued) > 7 && differenceInCalendarDays(new Date(), issued) <= 30;
+    }).length,
+    earlierJobsCount: enrichedProjects.filter((project) => {
+      const issued = parseISO(project.issueDate);
+      return isValid(issued) && differenceInCalendarDays(new Date(), issued) > 30;
+    }).length,
+    sampleResolvedDates: enrichedProjects.slice(0, 5).map((project) => ({
+      id: project.id,
+      issueDate: project.issueDate,
+      parsedIssueDate: parseISO(project.issueDate).toISOString()
+    })),
+    invalidDatePermitIds: enrichedProjects.filter((project) => !isValid(parseISO(project.issueDate))).map((project) => project.id).slice(0, 20)
+  });
 
   return {
     filters,
     summary: summarize(filteredProjects),
     marketPulse,
-    featured: enrichedProjects.slice(0, 5),
+    featured: featuredProjects,
     projects: enrichedProjects,
     activeContacts: buildActiveContacts(filteredProjects),
     availablePermitTypes: Array.from(new Set(projects.map((project) => project.permitSubtype || project.permitType).filter(Boolean))).sort(),
