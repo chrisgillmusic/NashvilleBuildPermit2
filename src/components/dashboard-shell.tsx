@@ -304,12 +304,19 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
     return () => window.clearTimeout(timer);
   }, [activeTab, expandedJobId]);
 
-  const visibleProjects = useMemo(() => {
+  const tradeFilteredProjects = useMemo(() => {
     if (profile.defaultFeedMode === 'my-trade' && profile.trade) {
       return projectViewForMode(payload.projects, 'my-trade', profile.trade);
     }
     return payload.projects;
   }, [payload.projects, profile.defaultFeedMode, profile.trade]);
+
+  const visibleProjects = tradeFilteredProjects;
+
+  const projectsWithValidResolvedDates = useMemo(
+    () => visibleProjects.filter((project) => isValid(parseISO(project.issueDate))),
+    [visibleProjects]
+  );
 
   const feedSections = useMemo(
     () => [
@@ -330,22 +337,39 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
       return {
         id: project.id,
         issueDate: project.issueDate,
+        resolvedTrade: project.applicableTrades?.[0]?.trade || '',
         parsed: isValid(issued) ? issued.toISOString() : 'invalid',
         ageInDays: isValid(issued) ? differenceInCalendarDays(new Date(), issued) : null
       };
     });
 
+    const topJobs = feedSections.find((section) => section.key === 'new')?.projects || [];
+    const jobsInProgress = feedSections.find((section) => section.key === 'active')?.projects || [];
+    const earlierJobs = feedSections.find((section) => section.key === 'older')?.projects || [];
+    const dropStep =
+      payload.projects.length > 0 && tradeFilteredProjects.length === 0
+        ? 'trade-filter'
+        : tradeFilteredProjects.length > 0 && projectsWithValidResolvedDates.length === 0
+          ? 'date-validation'
+          : 'none';
+
     console.log('BIDHAMMER JOBS SECTION DIAGNOSTICS', {
-      totalVisibleProjects: visibleProjects.length,
+      totalPermitsLoadedIntoJobsScreen: payload.projects.length,
+      permitsAfterNormalization: payload.projects.length,
+      permitsAfterTradeFiltering: tradeFilteredProjects.length,
+      permitsWithValidResolvedDates: projectsWithValidResolvedDates.length,
+      selectedTrade: profile.trade || null,
+      selectedFeedMode: profile.defaultFeedMode,
+      dropStep,
       featuredPermitId: payload.featured[0]?.id || null,
       permitsRemainingAfterFeaturedExclusion: Math.max(visibleProjects.length - payload.featured.length, 0),
-      topJobsCount: feedSections.find((section) => section.key === 'new')?.projects.length || 0,
-      jobsInProgressCount: feedSections.find((section) => section.key === 'active')?.projects.length || 0,
-      earlierJobsCount: feedSections.find((section) => section.key === 'older')?.projects.length || 0,
+      topJobsCount: topJobs.length,
+      jobsInProgressCount: jobsInProgress.length,
+      earlierJobsCount: earlierJobs.length,
       invalidDatePermitIds: visibleProjects.filter((project) => !isValid(parseISO(project.issueDate))).map((project) => project.id).slice(0, 20),
       sampleResolvedDates: sampleDates
     });
-  }, [feedSections, payload.featured, visibleProjects]);
+  }, [feedSections, payload.featured, payload.projects, profile.defaultFeedMode, profile.trade, projectsWithValidResolvedDates.length, tradeFilteredProjects.length, visibleProjects]);
 
   const contractors = useMemo(() => aggregateContacts(visibleProjects), [visibleProjects]);
   const filteredContractors = useMemo(() => {

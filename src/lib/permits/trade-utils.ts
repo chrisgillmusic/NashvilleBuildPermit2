@@ -33,6 +33,10 @@ function tradeCandidates(trade: string): string[] {
   if (normalized === 'framing') candidates.add('general construction');
   if (normalized === 'concrete') candidates.add('sitework');
   if (normalized === 'sitework') candidates.add('concrete');
+  if (normalized === 'storefront') candidates.add('glazing');
+  if (normalized === 'glazing') candidates.add('storefront');
+  if (normalized === 'paint') candidates.add('painting');
+  if (normalized === 'painting') candidates.add('paint');
 
   return [...candidates];
 }
@@ -108,8 +112,8 @@ function tradeKeywordMap(trade: string): string[] {
   if (normalized === 'concrete') return ['concrete', 'foundation', 'structural'];
   if (normalized === 'framing') return ['framing', 'drywall', 'structural'];
   if (normalized === 'fire protection') return ['fire protection', 'sprinkler', 'mep'];
-  if (normalized === 'paint') return ['paint', 'finishes', 'interiors'];
-  if (normalized === 'storefront') return ['storefront', 'glass', 'exterior'];
+  if (normalized === 'paint') return ['paint', 'painting', 'finishes', 'interiors'];
+  if (normalized === 'storefront') return ['storefront', 'glazing', 'glass', 'façade', 'exterior'];
   return ['drywall', 'ceilings', 'flooring', 'paint', 'interiors'];
 }
 

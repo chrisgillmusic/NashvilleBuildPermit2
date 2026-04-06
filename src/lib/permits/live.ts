@@ -374,6 +374,10 @@ function comparableTradeCandidates(value: string): string[] {
   if (normalized === 'framing') candidates.add('general construction');
   if (normalized === 'concrete') candidates.add('sitework');
   if (normalized === 'sitework') candidates.add('concrete');
+  if (normalized === 'storefront') candidates.add('glazing');
+  if (normalized === 'glazing') candidates.add('storefront');
+  if (normalized === 'paint') candidates.add('painting');
+  if (normalized === 'painting') candidates.add('paint');
 
   return [...candidates];
 }
@@ -1083,8 +1087,8 @@ function fallbackTradeDecision(project: PermitProject, trade: string): { isTrade
     concrete: ['concrete', 'foundation', 'slab', 'structural'],
     framing: ['framing', 'stud', 'partition', 'shell'],
     'fire protection': ['fire protection', 'sprinkler', 'life safety'],
-    paint: ['paint', 'finish', 'interior'],
-    storefront: ['storefront', 'glass', 'façade', 'exterior'],
+    paint: ['paint', 'painting', 'finish', 'interior'],
+    storefront: ['storefront', 'glazing', 'glass', 'façade', 'exterior'],
     'general interiors': ['interior', 'tenant', 'build-out', 'finish']
   };
 
@@ -1160,11 +1164,7 @@ function applyEmbeddedNarrative(project: PermitProject, trade: string): PermitPr
     tradeReasonFromContent && !textsOverlap(tradeReasonFromContent, summary) && !textsOverlap(tradeReasonFromContent, project.whyItMatters)
       ? tradeReasonFromContent
       : fallbackTrade.tradeReason;
-  const isTradeRelevant = trade
-    ? project.applicableTrades?.length
-      ? Boolean(applicableTrade)
-      : fallbackTrade.isTradeRelevant
-    : null;
+  const isTradeRelevant = trade ? (applicableTrade ? true : fallbackTrade.isTradeRelevant) : null;
 
   const enrichedProject: PermitProject = {
     ...project,
