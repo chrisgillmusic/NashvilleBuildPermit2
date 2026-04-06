@@ -225,12 +225,18 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
   const [profileSaveState, setProfileSaveState] = useState<ProfileSaveState>('idle');
   const pinnedFrameRef = useRef<HTMLDivElement | null>(null);
   const cardAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const effectiveTrade = profile.defaultFeedMode === 'my-trade' ? profile.trade : '';
+  const initialRequestQuery = useMemo(() => {
+    const params = new URLSearchParams(buildQuery(initialPayload.filters));
+    return params.toString();
+  }, [initialPayload.filters]);
+  const lastAutoRefreshQueryRef = useRef<string | null>(initialRequestQuery);
 
   const requestQuery = useMemo(() => {
     const params = new URLSearchParams(buildQuery(filters));
-    if (profile.trade) params.set('trade', profile.trade);
+    if (effectiveTrade) params.set('trade', effectiveTrade);
     return params.toString();
-  }, [filters, profile.trade]);
+  }, [effectiveTrade, filters]);
 
   useEffect(() => {
     const storedProfile = window.localStorage.getItem(PROFILE_KEY);
@@ -304,6 +310,14 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
     return () => window.clearTimeout(timer);
   }, [activeTab, expandedJobId]);
 
+  useEffect(() => {
+    if (!onboardingReady || showOnboarding) return;
+    if (lastAutoRefreshQueryRef.current === requestQuery) return;
+
+    lastAutoRefreshQueryRef.current = requestQuery;
+    void refreshPayload();
+  }, [onboardingReady, requestQuery, showOnboarding]);
+
   const tradeFilteredProjects = useMemo(() => {
     if (profile.defaultFeedMode === 'my-trade' && profile.trade) {
       return projectViewForMode(payload.projects, 'my-trade', profile.trade);
@@ -368,9 +382,15 @@ export function DashboardShell({ initialPayload, initialTab = 'jobs' }: Props) {
       dropStep,
       featuredPermitId: payload.featured[0]?.id || null,
       permitsRemainingAfterFeaturedExclusion: Math.max(visibleProjects.length - payload.featured.length, 0),
+      topJobsCondition: 'ageInDays >= 0 && ageInDays <= 7',
+      jobsInProgressCondition: 'ageInDays > 7 && ageInDays <= 30',
+      earlierJobsCondition: 'ageInDays > 30 && ageInDays <= 90',
       topJobsCount: topJobs.length,
+      topJobsSampleIds: topJobs.slice(0, 8).map((project) => project.id),
       jobsInProgressCount: jobsInProgress.length,
+      jobsInProgressSampleIds: jobsInProgress.slice(0, 8).map((project) => project.id),
       earlierJobsCount: earlierJobs.length,
+      earlierJobsSampleIds: earlierJobs.slice(0, 8).map((project) => project.id),
       invalidDatePermitIds: visibleProjects.filter((project) => resolveProjectAgeInDays(project) === null).map((project) => project.id).slice(0, 20),
       sampleResolvedDates: sampleDates
     });

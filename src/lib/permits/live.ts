@@ -1427,7 +1427,8 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
   const { projects, marketPulse, fetchedAt } = await loadProjects();
   const filters = sanitizeFilters(input);
   const filteredProjects = sortProjects(projects.filter((project) => matchesFilters(project, filters)), filters.sort);
-  const visibleProjects = filteredProjects.slice(0, 120);
+  const tradeScopedProjects = trade ? filteredProjects.filter((project) => projectMatchesTrade(project, trade)) : filteredProjects;
+  const visibleProjects = tradeScopedProjects.slice(0, 120);
   const enrichedProjects = await enrichProjects(visibleProjects, trade);
   const lastProject = enrichedProjects[0];
   const storedAiCount = enrichedProjects.filter((project) => project.summarySource === 'ai').length;
@@ -1448,18 +1449,47 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
     totalPermitsWithinThreeMonthWindow: withinDisplayWindowProjects.length,
     totalPermitsMatchingSelectedTrade: tradeMatchedProjects.length,
     totalPermitsAfterTopLevelFilter: filteredProjects.length,
+    totalPermitsAfterTradeFilter: tradeScopedProjects.length,
+    totalPermitsVisibleAfterSlice: enrichedProjects.length,
     selectedTrade: trade || null,
     featuredPermitId: featuredProjects[0]?.id || null,
     permitsRemainingAfterFeaturedExclusion: Math.max(enrichedProjects.length - featuredProjects.length, 0),
+    topJobsCondition: 'ageInDays >= 0 && ageInDays <= 7',
+    jobsInProgressCondition: 'ageInDays > 7 && ageInDays <= 30',
+    earlierJobsCondition: 'ageInDays > 30 && ageInDays <= 90',
+    topJobsSampleIds: enrichedProjects
+      .filter((project) => {
+        const issued = parseISO(project.issueDate);
+        const ageInDays = isValid(issued) ? differenceInCalendarDays(new Date(), issued) : -1;
+        return ageInDays >= 0 && ageInDays <= 7;
+      })
+      .slice(0, 8)
+      .map((project) => project.id),
     jobsInProgressCount: enrichedProjects.filter((project) => {
       const issued = parseISO(project.issueDate);
       return isValid(issued) && differenceInCalendarDays(new Date(), issued) > 7 && differenceInCalendarDays(new Date(), issued) <= 30;
     }).length,
+    jobsInProgressSampleIds: enrichedProjects
+      .filter((project) => {
+        const issued = parseISO(project.issueDate);
+        const ageInDays = isValid(issued) ? differenceInCalendarDays(new Date(), issued) : -1;
+        return ageInDays > 7 && ageInDays <= 30;
+      })
+      .slice(0, 8)
+      .map((project) => project.id),
     earlierJobsCount: enrichedProjects.filter((project) => {
       const issued = parseISO(project.issueDate);
       const ageInDays = isValid(issued) ? differenceInCalendarDays(new Date(), issued) : -1;
       return ageInDays > 30 && ageInDays <= 90;
     }).length,
+    earlierJobsSampleIds: enrichedProjects
+      .filter((project) => {
+        const issued = parseISO(project.issueDate);
+        const ageInDays = isValid(issued) ? differenceInCalendarDays(new Date(), issued) : -1;
+        return ageInDays > 30 && ageInDays <= 90;
+      })
+      .slice(0, 8)
+      .map((project) => project.id),
     sampleResolvedDates: enrichedProjects.slice(0, 5).map((project) => ({
       id: project.id,
       issueDate: project.issueDate,
@@ -1470,11 +1500,11 @@ export async function getDashboardPayload(input?: Partial<DashboardFilters>, tra
 
   return {
     filters,
-    summary: summarize(filteredProjects),
+    summary: summarize(tradeScopedProjects),
     marketPulse,
     featured: featuredProjects,
     projects: enrichedProjects,
-    activeContacts: buildActiveContacts(filteredProjects),
+    activeContacts: buildActiveContacts(tradeScopedProjects),
     availablePermitTypes: Array.from(new Set(projects.map((project) => project.permitSubtype || project.permitType).filter(Boolean))).sort(),
     availableNeighborhoods: Array.from(new Set(projects.map((project) => project.neighborhood).filter(Boolean))).sort(),
     asOf: new Date(fetchedAt).toISOString(),
